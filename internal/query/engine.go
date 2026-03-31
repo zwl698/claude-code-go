@@ -1,0 +1,539 @@
+package query
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"sync"
+	"time"
+
+	"claude-code/internal/types"
+	"claude-code/pkg/api"
+)
+
+// QueryEngineConfig contains configuration for the QueryEngine.
+type QueryEngineConfig struct {
+	Cwd                string
+	Tools              []types.Tool
+	Commands           []types.Command
+	MCPClients         []types.MCPServerConnection
+	CanUseTool         types.CanUseToolFunc
+	GetAppState        func() *types.AppState
+	SetAppState        func(func(*types.AppState) *types.AppState)
+	InitialMessages    []types.Message
+	ReadFileCache      types.FileStateCache
+	CustomSystemPrompt string
+	AppendSystemPrompt string
+	UserSpecifiedModel string
+	FallbackModel      string
+	ThinkingConfig     *types.ThinkingConfig
+	MaxTurns           int
+	MaxBudgetUsd       float64
+	Verbose            bool
+	AbortController    *types.AbortController
+}
+
+// QueryEngine owns the query lifecycle and session state for a conversation.
+// It extracts the core logic from ask() into a standalone class that can be
+// used by both the headless/SDK path and the REPL.
+type QueryEngine struct {
+	config             QueryEngineConfig
+	mutableMessages    []types.Message
+	abortController    *types.AbortController
+	totalUsage         Usage
+	hasHandledOrphaned bool
+	readFileState      types.FileStateCache
+	mu                 sync.RWMutex
+	sessionID          string
+	startTime          time.Time
+}
+
+// Usage tracks API usage.
+type Usage struct {
+	InputTokens              int
+	OutputTokens             int
+	CacheCreationInputTokens int
+	CacheReadInputTokens     int
+}
+
+// SDKMessage represents a message sent to SDK consumers.
+type SDKMessage struct {
+	Type      string      `json:"type"`
+	Message   interface{} `json:"message,omitempty"`
+	SessionID string      `json:"session_id"`
+	UUID      string      `json:"uuid"`
+	Timestamp int64       `json:"timestamp"`
+}
+
+// ResultMessage represents the final result of a query.
+type ResultMessage struct {
+	Type          string  `json:"type"`
+	Subtype       string  `json:"subtype"`
+	IsError       bool    `json:"is_error"`
+	DurationMs    int64   `json:"duration_ms"`
+	DurationApiMs int64   `json:"duration_api_ms"`
+	NumTurns      int     `json:"num_turns"`
+	Result        string  `json:"result"`
+	StopReason    string  `json:"stop_reason"`
+	SessionID     string  `json:"session_id"`
+	TotalCostUsd  float64 `json:"total_cost_usd"`
+	Usage         Usage   `json:"usage"`
+	FastModeState string  `json:"fast_mode_state"`
+	UUID          string  `json:"uuid"`
+}
+
+// NewQueryEngine creates a new query engine.
+func NewQueryEngine(config QueryEngineConfig) *QueryEngine {
+	abortController := config.AbortController
+	if abortController == nil {
+		abortController = types.NewAbortController()
+	}
+
+	return &QueryEngine{
+		config:          config,
+		mutableMessages: config.InitialMessages,
+		abortController: abortController,
+		totalUsage:      Usage{},
+		readFileState:   config.ReadFileCache,
+		sessionID:       generateSessionID(),
+	}
+}
+
+// SubmitMessage submits a message to the query engine and yields responses.
+func (e *QueryEngine) SubmitMessage(ctx context.Context, prompt string) (<-chan interface{}, error) {
+	e.startTime = time.Now()
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	// Create output channel
+	output := make(chan interface{}, 100)
+
+	go func() {
+		defer close(output)
+
+		// Process user input and get messages
+		userMessages := e.processUserInput(prompt)
+		e.mutableMessages = append(e.mutableMessages, userMessages...)
+
+		// Yield user message
+		for _, msg := range userMessages {
+			output <- SDKMessage{
+				Type:      "user",
+				Message:   msg,
+				SessionID: e.sessionID,
+				UUID:      generateUUID(),
+				Timestamp: time.Now().UnixMilli(),
+			}
+		}
+
+		// Check if we should query the API
+		shouldQuery := e.shouldQueryAPI(prompt)
+		if !shouldQuery {
+			// Return early for slash commands that don't need API
+			output <- e.createResultMessage(0, "")
+			return
+		}
+
+		// Execute the query loop
+		e.executeQueryLoop(ctx, output)
+	}()
+
+	return output, nil
+}
+
+// executeQueryLoop runs the main query loop.
+func (e *QueryEngine) executeQueryLoop(ctx context.Context, output chan<- interface{}) {
+	turnCount := 0
+	maxTurns := e.config.MaxTurns
+	if maxTurns == 0 {
+		maxTurns = 100 // Default max turns
+	}
+
+	for turnCount < maxTurns {
+		// Check for abort
+		if e.abortController.IsAborted() {
+			output <- SDKMessage{
+				Type:      "system",
+				Message:   map[string]string{"subtype": "interrupted"},
+				SessionID: e.sessionID,
+				UUID:      generateUUID(),
+			}
+			return
+		}
+
+		// Build system prompt
+		systemPrompt := e.buildSystemPrompt()
+
+		// Get the model to use
+		model := e.getModel()
+
+		// Create API request
+		req := api.MessageRequest{
+			Model:     model,
+			MaxTokens: 4096,
+			Messages:  e.convertMessagesForAPI(),
+			System:    systemPrompt,
+			Tools:     e.convertToolsForAPI(),
+		}
+
+		// Configure thinking if enabled
+		if e.config.ThinkingConfig != nil && e.config.ThinkingConfig.Enabled {
+			req.Thinking = &api.ThinkingConfig{
+				Type:        e.config.ThinkingConfig.Type,
+				BudgetToken: e.config.ThinkingConfig.BudgetToken,
+			}
+		}
+
+		// Call the API
+		response, err := e.callAPI(ctx, req)
+		if err != nil {
+			output <- SDKMessage{
+				Type:      "system",
+				Message:   map[string]string{"subtype": "error", "error": err.Error()},
+				SessionID: e.sessionID,
+				UUID:      generateUUID(),
+			}
+			return
+		}
+
+		// Update usage
+		e.totalUsage.InputTokens += response.Usage.InputTokens
+		e.totalUsage.OutputTokens += response.Usage.OutputTokens
+		e.totalUsage.CacheCreationInputTokens += response.Usage.CacheCreationInputTokens
+		e.totalUsage.CacheReadInputTokens += response.Usage.CacheReadInputTokens
+
+		// Create assistant message
+		assistantMsg := types.Message{
+			Role:    "assistant",
+			Content: mustMarshalJSON(response.Content),
+		}
+		e.mutableMessages = append(e.mutableMessages, assistantMsg)
+
+		// Yield assistant message
+		output <- SDKMessage{
+			Type:      "assistant",
+			Message:   response,
+			SessionID: e.sessionID,
+			UUID:      generateUUID(),
+			Timestamp: time.Now().UnixMilli(),
+		}
+
+		// Check for tool use
+		toolUseBlocks := e.extractToolUseBlocks(response)
+		if len(toolUseBlocks) == 0 {
+			// No tool use, we're done
+			output <- e.createResultMessage(turnCount, response.StopReason)
+			return
+		}
+
+		// Execute tools
+		toolResults := e.executeTools(ctx, toolUseBlocks, output)
+
+		// Add tool results to messages
+		for _, result := range toolResults {
+			e.mutableMessages = append(e.mutableMessages, result)
+		}
+
+		turnCount++
+	}
+
+	// Max turns reached
+	output <- ResultMessage{
+		Type:          "result",
+		Subtype:       "max_turns_reached",
+		IsError:       true,
+		DurationMs:    time.Since(e.startTime).Milliseconds(),
+		NumTurns:      turnCount,
+		SessionID:     e.sessionID,
+		TotalCostUsd:  e.calculateCost(),
+		Usage:         e.totalUsage,
+		FastModeState: "disabled",
+		UUID:          generateUUID(),
+	}
+}
+
+// processUserInput processes user input and returns messages.
+func (e *QueryEngine) processUserInput(prompt string) []types.Message {
+	return []types.Message{
+		{
+			Role:    "user",
+			Content: mustMarshalJSON([]map[string]string{{"type": "text", "text": prompt}}),
+		},
+	}
+}
+
+// shouldQueryAPI determines if we should query the API.
+func (e *QueryEngine) shouldQueryAPI(prompt string) bool {
+	// Check for slash commands
+	if len(prompt) > 0 && prompt[0] == '/' {
+		// Some slash commands don't need API
+		cmd := e.findCommand(prompt)
+		if cmd != nil && cmd.Immediate {
+			return false
+		}
+	}
+	return true
+}
+
+// findCommand finds a command by name.
+func (e *QueryEngine) findCommand(prompt string) *types.Command {
+	for _, cmd := range e.config.Commands {
+		if cmd.Name == prompt[1:] {
+			return &cmd
+		}
+	}
+	return nil
+}
+
+// buildSystemPrompt builds the system prompt.
+func (e *QueryEngine) buildSystemPrompt() string {
+	var prompt string
+
+	if e.config.CustomSystemPrompt != "" {
+		prompt = e.config.CustomSystemPrompt
+	} else {
+		prompt = `You are Claude Code, an AI assistant specialized in software development.
+
+You have access to tools for reading, writing, and editing files, running shell commands, searching code, and more.
+
+Use these tools to help the user with their software development tasks. Always be helpful, accurate, and efficient.
+
+When making file changes, prefer editing existing files over creating new ones unless the user explicitly requests a new file.`
+	}
+
+	if e.config.AppendSystemPrompt != "" {
+		prompt += "\n\n" + e.config.AppendSystemPrompt
+	}
+
+	return prompt
+}
+
+// getModel returns the model to use.
+func (e *QueryEngine) getModel() string {
+	if e.config.UserSpecifiedModel != "" {
+		return e.config.UserSpecifiedModel
+	}
+
+	appState := e.config.GetAppState()
+	if appState != nil && appState.MainLoopModel != "" {
+		return appState.MainLoopModel
+	}
+
+	return "claude-sonnet-4-20250514" // Default model
+}
+
+// convertMessagesForAPI converts internal messages to API format.
+func (e *QueryEngine) convertMessagesForAPI() []api.Message {
+	messages := make([]api.Message, len(e.mutableMessages))
+	for i, msg := range e.mutableMessages {
+		var content []api.ContentBlock
+		if err := json.Unmarshal(msg.Content, &content); err != nil {
+			// Fallback to text content
+			content = []api.ContentBlock{{
+				Type: "text",
+				Text: string(msg.Content),
+			}}
+		}
+		messages[i] = api.Message{
+			Role:    msg.Role,
+			Content: content,
+		}
+	}
+	return messages
+}
+
+// convertToolsForAPI converts internal tools to API format.
+func (e *QueryEngine) convertToolsForAPI() []api.ToolDefinition {
+	tools := make([]api.ToolDefinition, 0, len(e.config.Tools))
+	for _, tool := range e.config.Tools {
+		schema := tool.InputSchema()
+		description, err := tool.Description(context.Background(), nil, types.ToolOptions{})
+		if err != nil {
+			description = tool.Name() // Fallback to tool name
+		}
+		tools = append(tools, api.ToolDefinition{
+			Name:        tool.Name(),
+			Description: description,
+			InputSchema: map[string]interface{}{
+				"type":       schema.Type,
+				"properties": schema.Properties,
+				"required":   schema.Required,
+			},
+		})
+	}
+	return tools
+}
+
+// callAPI calls the Anthropic API.
+func (e *QueryEngine) callAPI(ctx context.Context, req api.MessageRequest) (*api.MessageResponse, error) {
+	// This would use the API client
+	// For now, return a placeholder
+	return nil, fmt.Errorf("API client not configured")
+}
+
+// extractToolUseBlocks extracts tool use blocks from a response.
+func (e *QueryEngine) extractToolUseBlocks(response *api.MessageResponse) []api.ContentBlock {
+	var blocks []api.ContentBlock
+	for _, block := range response.Content {
+		if block.Type == "tool_use" {
+			blocks = append(blocks, block)
+		}
+	}
+	return blocks
+}
+
+// executeTools executes tool calls and yields progress.
+func (e *QueryEngine) executeTools(ctx context.Context, blocks []api.ContentBlock, output chan<- interface{}) []types.Message {
+	var results []types.Message
+
+	for _, block := range blocks {
+		// Find the tool
+		tool := e.findTool(block.Name)
+		if tool == nil {
+			results = append(results, types.Message{
+				Role: "user",
+				Content: mustMarshalJSON([]map[string]interface{}{
+					{
+						"type":        "tool_result",
+						"tool_use_id": block.ID,
+						"content":     fmt.Sprintf("Unknown tool: %s", block.Name),
+						"is_error":    true,
+					},
+				}),
+			})
+			continue
+		}
+
+		// Execute the tool
+		toolCtx := &types.ToolContext{
+			ToolUseId:   block.ID,
+			Options:     types.ToolOptions{},
+			GetAppState: func() interface{} { return e.config.GetAppState() },
+		}
+
+		result, err := tool.Call(ctx, block.Input, toolCtx, e.config.CanUseTool, nil, nil)
+		if err != nil {
+			results = append(results, types.Message{
+				Role: "user",
+				Content: mustMarshalJSON([]map[string]interface{}{
+					{
+						"type":        "tool_result",
+						"tool_use_id": block.ID,
+						"content":     err.Error(),
+						"is_error":    true,
+					},
+				}),
+			})
+			continue
+		}
+
+		// Create tool result message
+		var content string
+		if result.Error != nil {
+			content = result.Error.Error()
+		} else {
+			content = fmt.Sprintf("%v", result.Output)
+		}
+
+		results = append(results, types.Message{
+			Role: "user",
+			Content: mustMarshalJSON([]map[string]interface{}{
+				{
+					"type":        "tool_result",
+					"tool_use_id": block.ID,
+					"content":     content,
+				},
+			}),
+		})
+
+		// Yield progress
+		output <- SDKMessage{
+			Type: "tool_result",
+			Message: map[string]interface{}{
+				"tool_name":   block.Name,
+				"tool_use_id": block.ID,
+				"content":     content,
+			},
+			SessionID: e.sessionID,
+			UUID:      generateUUID(),
+		}
+	}
+
+	return results
+}
+
+// findTool finds a tool by name.
+func (e *QueryEngine) findTool(name string) types.Tool {
+	for _, tool := range e.config.Tools {
+		if tool.Name() == name {
+			return tool
+		}
+		for _, alias := range tool.Aliases() {
+			if alias == name {
+				return tool
+			}
+		}
+	}
+	return nil
+}
+
+// createResultMessage creates a result message.
+func (e *QueryEngine) createResultMessage(turnCount int, stopReason string) ResultMessage {
+	return ResultMessage{
+		Type:          "result",
+		Subtype:       "success",
+		IsError:       false,
+		DurationMs:    time.Since(e.startTime).Milliseconds(),
+		NumTurns:      turnCount,
+		SessionID:     e.sessionID,
+		TotalCostUsd:  e.calculateCost(),
+		Usage:         e.totalUsage,
+		FastModeState: "disabled",
+		UUID:          generateUUID(),
+		StopReason:    stopReason,
+	}
+}
+
+// calculateCost calculates the cost of the API calls.
+func (e *QueryEngine) calculateCost() float64 {
+	// Simplified cost calculation
+	// Real implementation would use model-specific pricing
+	inputCost := float64(e.totalUsage.InputTokens) * 0.000003
+	outputCost := float64(e.totalUsage.OutputTokens) * 0.000015
+	cacheReadCost := float64(e.totalUsage.CacheReadInputTokens) * 0.0000003
+	cacheWriteCost := float64(e.totalUsage.CacheCreationInputTokens) * 0.00000375
+
+	return inputCost + outputCost + cacheReadCost + cacheWriteCost
+}
+
+// Interrupt interrupts the current query.
+func (e *QueryEngine) Interrupt() {
+	e.abortController.Abort()
+}
+
+// GetMessages returns the current messages.
+func (e *QueryEngine) GetMessages() []types.Message {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	return e.mutableMessages
+}
+
+// GetSessionID returns the session ID.
+func (e *QueryEngine) GetSessionID() string {
+	return e.sessionID
+}
+
+// Helper functions
+
+func generateUUID() string {
+	return fmt.Sprintf("%d", time.Now().UnixNano())
+}
+
+func generateSessionID() string {
+	return fmt.Sprintf("session_%d", time.Now().UnixNano())
+}
+
+func mustMarshalJSON(v interface{}) json.RawMessage {
+	data, _ := json.Marshal(v)
+	return data
+}

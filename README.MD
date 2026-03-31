@@ -18,7 +18,46 @@
 
 ---
 
+## ✨ Go 版本实现功能
+
+### 🔐 认证系统
+
+#### OAuth 认证
+- **Token 管理**：支持 Access Token、Refresh Token 的存储与自动刷新
+- **并发安全**：使用 mutex 和 channel 实现线程安全的 token 操作
+- **跨进程协调**：文件锁确保多进程环境下 token 刷新的正确性
+- **自动刷新**：检测 token 过期或 401 错误时自动刷新
+- **环境变量支持**：`CLAUDE_CODE_OAUTH_TOKEN` 环境变量覆盖
+
+#### 多云供应商认证
+- **AWS Bedrock**：AWS SigV4 签名、STS 临时凭证、SSO 登录
+- **Google Vertex AI**：ADC (Application Default Credentials) 认证
+- **Azure Foundry**：API Key 和 Azure AD 认证
+
+### 🔄 重试机制
+
+- **指数退避**：基础延迟 500ms，最大延迟 32 秒
+- **抖动**：随机化退避时间避免惊群效应
+- **持久重试**：支持长时间运行的会话（最大 6 小时）
+- **错误分类处理**：
+  - 429 速率限制：尊重 `Retry-After` 和 `Anthropic-Ratelimit-Unified-Reset` 头
+  - 529 过载错误：区分前台/后台任务重试策略
+  - 401 认证错误：自动刷新 OAuth token
+  - 5xx 服务器错误：指数退避重试
+- **心跳机制**：长时间等待时定期输出心跳日志
+
+### 🔌 MCP (Model Context Protocol)
+
+- **传输层**：支持 stdio 和 SSE 传输
+- **工具过滤**：基于 URL 模式的工具名称过滤
+- **配置管理**：支持 `${VAR:-default}` 环境变量扩展语法
+- **权限检查**：细粒度的工具权限验证
+
+---
+
 ## 📂 目录结构
+
+### TypeScript 原始代码
 
 ```
 restored-src/src/
@@ -38,6 +77,37 @@ restored-src/src/
 └── vim/                  # Vim 模式
 ```
 
+### Go 实现代码
+
+```
+internal/
+├── constants/            # 常量定义
+│   ├── oauth.go          # OAuth 配置（scopes、endpoints）
+│   ├── betas.go          # API beta headers
+│   └── api_limits.go     # API 限制常量
+├── services/
+│   ├── api/              # API 客户端
+│   │   ├── client.go     # Anthropic API 客户端
+│   │   ├── retry.go      # 重试逻辑
+│   │   ├── errors.go     # 错误类型定义
+│   │   ├── auth_aws.go   # AWS Bedrock 认证
+│   │   ├── auth_vertex.go # Google Vertex 认证
+│   │   ├── auth_azure.go # Azure Foundry 认证
+│   │   └── signer_aws.go # AWS SigV4 签名
+│   ├── oauth/            # OAuth 认证
+│   │   └── client.go     # OAuth token 管理
+│   └── mcp/              # MCP 协议实现
+│       ├── client.go     # MCP 客户端
+│       ├── config.go     # 配置管理
+│       └── manager.go    # MCP 服务器管理
+├── utils/                # 工具函数
+│   ├── auth.go           # 认证管理器
+│   ├── providers.go      # API 提供商检测
+│   └── uuid.go           # UUID 生成
+├── types/                # 类型定义
+└── cli/                  # CLI 入口
+```
+
 ---
 
 ## 🔗 来源信息
@@ -46,6 +116,33 @@ restored-src/src/
 |------|------|
 | npm 包 | `@anthropic-ai/claude-code` |
 | 还原版本 | 2.1.88 |
+
+---
+
+## 🛠️ 环境变量
+
+### OAuth 配置
+| 变量 | 说明 |
+|------|------|
+| `CLAUDE_CODE_OAUTH_TOKEN` | 直接设置 OAuth access token |
+| `CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR` | 从文件描述符读取 token |
+| `CLAUDE_CODE_OAUTH_CLIENT_ID` | 覆盖 OAuth client ID |
+| `CLAUDE_CODE_CUSTOM_OAUTH_URL` | 自定义 OAuth 端点（仅限 FedStart） |
+
+### 多云认证
+| 变量 | 说明 |
+|------|------|
+| `CLAUDE_CODE_USE_BEDROCK` | 使用 AWS Bedrock |
+| `CLAUDE_CODE_USE_VERTEX` | 使用 Google Vertex AI |
+| `CLAUDE_CODE_USE_FOUNDRY` | 使用 Azure Foundry |
+| `ANTHROPIC_API_KEY` | API 密钥 |
+| `ANTHROPIC_AUTH_TOKEN` | OAuth bearer token |
+
+### 重试配置
+| 变量 | 说明 |
+|------|------|
+| `API_TIMEOUT_MS` | API 请求超时（毫秒） |
+| `CLAUDE_CODE_DISABLE_PERSISTENT_RETRY` | 禁用持久重试 |
 
 ---
 

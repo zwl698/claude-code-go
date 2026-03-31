@@ -40,6 +40,18 @@ type Client struct {
 	httpClient     *http.Client
 	defaultHeaders map[string]string
 	mu             sync.RWMutex
+
+	// AWS Bedrock authentication
+	awsCredentials *AWSCredentials
+	awsRegion      string
+
+	// Google Vertex authentication
+	googleAccessToken string
+	googleTokenExpiry time.Time
+
+	// Azure Foundry authentication
+	azureAccessToken string
+	azureTokenExpiry time.Time
 }
 
 // AnthropicRequest represents a request to the Anthropic API.
@@ -75,9 +87,8 @@ type Usage struct {
 
 // Default values
 const (
-	DefaultTimeout    = 600 * time.Second
-	DefaultMaxRetries = 2
-	DefaultBaseURL    = "https://api.anthropic.com"
+	DefaultTimeout = 600 * time.Second
+	DefaultBaseURL = "https://api.anthropic.com"
 )
 
 // NewClient creates a new API client.
@@ -165,93 +176,6 @@ func GetAnthropicClient(ctx context.Context, opts ClientOptions) (*Client, error
 	}
 }
 
-// NewBedrockClient creates a client for AWS Bedrock.
-func NewBedrockClient(opts ClientOptions) (*Client, error) {
-	// For Bedrock, we need AWS credentials
-	// In Go, we would use the AWS SDK
-	// For now, create a standard client with Bedrock-specific configuration
-	client, err := NewClient(opts)
-	if err != nil {
-		return nil, err
-	}
-
-	// Set Bedrock-specific base URL
-	region := utils.GetAWSRegion()
-	if opts.Model != "" && os.Getenv("ANTHROPIC_SMALL_FAST_MODEL_AWS_REGION") != "" {
-		// Use region override for small fast model
-		region = os.Getenv("ANTHROPIC_SMALL_FAST_MODEL_AWS_REGION")
-	}
-
-	// Bedrock uses a different endpoint pattern
-	client.options.BaseURL = fmt.Sprintf(
-		"https://bedrock-runtime.%s.amazonaws.com",
-		region,
-	)
-
-	// Add Bedrock-specific headers
-	if bearerToken := os.Getenv("AWS_BEARER_TOKEN_BEDROCK"); bearerToken != "" {
-		client.defaultHeaders["Authorization"] = "Bearer " + bearerToken
-	}
-
-	return client, nil
-}
-
-// NewVertexClient creates a client for Google Vertex AI.
-func NewVertexClient(ctx context.Context, opts ClientOptions) (*Client, error) {
-	client, err := NewClient(opts)
-	if err != nil {
-		return nil, err
-	}
-
-	// Get Vertex-specific configuration
-	region := utils.GetVertexRegionForModel(opts.Model)
-	projectID := os.Getenv("ANTHROPIC_VERTEX_PROJECT_ID")
-
-	// Vertex uses a different endpoint pattern
-	client.options.BaseURL = fmt.Sprintf(
-		"https://%s-aiplatform.googleapis.com/v1/projects/%s/locations/%s/publishers/anthropic",
-		region, projectID, region,
-	)
-
-	// For Vertex, we need Google Auth
-	// In Go, we would use google.golang.org/api/option
-	// For now, check for explicit token
-	if token := os.Getenv("GOOGLE_APPLICATION_CREDENTIALS"); token != "" {
-		// This would normally load credentials from the file
-		// For now, we just note that auth is configured
-	}
-
-	return client, nil
-}
-
-// NewFoundryClient creates a client for Azure Foundry.
-func NewFoundryClient(opts ClientOptions) (*Client, error) {
-	client, err := NewClient(opts)
-	if err != nil {
-		return nil, err
-	}
-
-	// Get Foundry-specific configuration
-	resource := os.Getenv("ANTHROPIC_FOUNDRY_RESOURCE")
-	baseURLOverride := os.Getenv("ANTHROPIC_FOUNDRY_BASE_URL")
-
-	if baseURLOverride != "" {
-		client.options.BaseURL = baseURLOverride
-	} else if resource != "" {
-		client.options.BaseURL = fmt.Sprintf(
-			"https://%s.services.ai.azure.com/anthropic/v1",
-			resource,
-		)
-	}
-
-	// Add Foundry-specific auth
-	if apiKey := os.Getenv("ANTHROPIC_FOUNDRY_API_KEY"); apiKey != "" {
-		client.defaultHeaders["api-key"] = apiKey
-	}
-
-	return client, nil
-}
-
 // DoRequest performs an API request.
 func (c *Client) DoRequest(ctx context.Context, method, path string, body interface{}, result interface{}) error {
 	var reqBody io.Reader
@@ -263,8 +187,8 @@ func (c *Client) DoRequest(ctx context.Context, method, path string, body interf
 		reqBody = bytes.NewReader(jsonBody)
 	}
 
-	url := c.options.BaseURL + path
-	req, err := http.NewRequestWithContext(ctx, method, url, reqBody)
+	reqURL := c.options.BaseURL + path
+	req, err := http.NewRequestWithContext(ctx, method, reqURL, reqBody)
 	if err != nil {
 		return fmt.Errorf("failed to create request: %w", err)
 	}
@@ -276,15 +200,40 @@ func (c *Client) DoRequest(ctx context.Context, method, path string, body interf
 	}
 	c.mu.RUnlock()
 
-	// Set auth
-	if c.options.AuthToken != "" {
-		req.Header.Set("Authorization", "Bearer "+c.options.AuthToken)
-	} else if c.options.APIKey != "" {
-		req.Header.Set("x-api-key", c.options.APIKey)
+	// Set auth based on provider
+	provider := utils.GetAPIProvider()
+	switch provider {
+	case utils.APIProviderBedrock:
+		// AWS Bedrock authentication
+		if c.awsCredentials != nil && c.awsCredentials.AccessKeyID != "" {
+			// Sign the request with AWS SigV4
+			signer := NewAWSSigner(c.awsCredentials, c.awsRegion)
+			if err := signer.SignRequest(req); err != nil {
+				return fmt.Errorf("failed to sign request: %w", err)
+			}
+		}
+		// If using bearer token, it's already set in defaultHeaders
+	case utils.APIProviderVertex:
+		// Google Vertex authentication - token already in defaultHeaders
+		if c.googleAccessToken != "" && req.Header.Get("Authorization") == "" {
+			req.Header.Set("Authorization", "Bearer "+c.googleAccessToken)
+		}
+	case utils.APIProviderFoundry:
+		// Azure Foundry authentication - token or api-key already in defaultHeaders
+		if c.azureAccessToken != "" && req.Header.Get("Authorization") == "" {
+			req.Header.Set("Authorization", "Bearer "+c.azureAccessToken)
+		}
+	default:
+		// First-party API authentication
+		if c.options.AuthToken != "" {
+			req.Header.Set("Authorization", "Bearer "+c.options.AuthToken)
+		} else if c.options.APIKey != "" {
+			req.Header.Set("x-api-key", c.options.APIKey)
+		}
 	}
 
 	// Add client request ID for first-party API
-	if utils.GetAPIProvider() == utils.APIProviderFirstParty && utils.IsFirstPartyAnthropicBaseURL() {
+	if provider == utils.APIProviderFirstParty && utils.IsFirstPartyAnthropicBaseURL() {
 		if req.Header.Get(ClientRequestIDHeader) == "" {
 			req.Header.Set(ClientRequestIDHeader, utils.GenerateUUID())
 		}

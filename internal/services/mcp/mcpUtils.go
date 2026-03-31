@@ -4,7 +4,9 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"net/url"
+	"regexp"
 	"sort"
 	"strings"
 )
@@ -271,13 +273,9 @@ func GetScopeLabel(scope ConfigScope) string {
 	}
 }
 
-// EnsureConfigScope validates and returns a valid ConfigScope.
-func EnsureConfigScope(scope string) ConfigScope {
-	if scope == "" {
-		return ConfigScopeLocal
-	}
-
-	validScopes := []ConfigScope{
+// ValidConfigScopes returns all valid config scope values
+func ValidConfigScopes() []ConfigScope {
+	return []ConfigScope{
 		ConfigScopeLocal,
 		ConfigScopeUser,
 		ConfigScopeProject,
@@ -286,23 +284,37 @@ func EnsureConfigScope(scope string) ConfigScope {
 		ConfigScopeClaudeAI,
 		ConfigScopeManaged,
 	}
+}
 
-	for _, s := range validScopes {
+// EnsureConfigScope validates and returns a valid ConfigScope.
+// Returns an error if the scope is invalid (matching TypeScript behavior).
+func EnsureConfigScope(scope string) (ConfigScope, error) {
+	if scope == "" {
+		return ConfigScopeLocal, nil
+	}
+
+	for _, s := range ValidConfigScopes() {
 		if string(s) == scope {
-			return s
+			return s, nil
 		}
 	}
 
-	return ConfigScopeLocal
+	return ConfigScopeLocal, fmt.Errorf("invalid scope: %s. Must be one of: %s",
+		scope, strings.Join(scopesToStrings(ValidConfigScopes()), ", "))
 }
 
-// EnsureTransport validates and returns a valid transport type.
-func EnsureTransport(transportType string) Transport {
-	if transportType == "" {
-		return TransportStdio
+// scopesToStrings converts config scopes to strings
+func scopesToStrings(scopes []ConfigScope) []string {
+	result := make([]string, len(scopes))
+	for i, s := range scopes {
+		result[i] = string(s)
 	}
+	return result
+}
 
-	validTransports := []Transport{
+// ValidTransports returns all valid transport type values
+func ValidTransports() []Transport {
+	return []Transport{
 		TransportStdio,
 		TransportSSE,
 		TransportSSEIDE,
@@ -310,14 +322,23 @@ func EnsureTransport(transportType string) Transport {
 		TransportWS,
 		TransportSDK,
 	}
+}
 
-	for _, t := range validTransports {
+// EnsureTransport validates and returns a valid transport type.
+// Returns an error if the transport type is invalid (matching TypeScript behavior).
+func EnsureTransport(transportType string) (Transport, error) {
+	if transportType == "" {
+		return TransportStdio, nil
+	}
+
+	for _, t := range ValidTransports() {
 		if string(t) == transportType {
-			return t
+			return t, nil
 		}
 	}
 
-	return TransportStdio
+	return TransportStdio, fmt.Errorf("invalid transport type: %s. Must be one of: stdio, sse, http",
+		transportType)
 }
 
 // ParseHeaders parses an array of header strings into a map.
@@ -508,23 +529,19 @@ func UrlPatternToRegex(pattern string) string {
 }
 
 // UrlMatchesPattern checks if a URL matches a pattern with wildcard support.
-// Uses simple wildcard matching for now - can be enhanced with full regex if needed.
+// Supports * as wildcard matching any characters.
+// Examples:
+//
+//	"https://example.com/*" matches "https://example.com/api/v1"
+//	"https://*.example.com/*" matches "https://api.example.com/path"
+//	"https://example.com:*/\*" matches any port
 func UrlMatchesPattern(urlStr, pattern string) bool {
-	// Simple implementation: check if URL contains or starts with the pattern
-	// For full wildcard support, regex matching would be needed
-	if strings.Contains(pattern, "*") {
-		// Convert wildcard pattern to prefix/suffix matching
-		parts := strings.Split(pattern, "*")
-		if len(parts) == 2 {
-			return strings.HasPrefix(urlStr, parts[0]) && strings.HasSuffix(urlStr, parts[1])
-		}
-		// For multiple wildcards, use simple containment check
-		for _, part := range parts {
-			if part != "" && !strings.Contains(urlStr, part) {
-				return false
-			}
-		}
-		return true
+	// Use regex matching for accurate wildcard support
+	regexPattern := UrlPatternToRegex(pattern)
+	matched, err := regexp.MatchString(regexPattern, urlStr)
+	if err != nil {
+		// Fallback to simple matching on regex error
+		return urlStr == pattern
 	}
-	return urlStr == pattern || strings.HasPrefix(urlStr, pattern)
+	return matched
 }

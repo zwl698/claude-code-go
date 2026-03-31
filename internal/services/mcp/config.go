@@ -245,16 +245,19 @@ func (l *McpConfigLoader) expandEnvVars(config McpServerConfig) McpServerConfig 
 	return result
 }
 
-// expandString expands environment variables in a string
+// expandString expands environment variables in a string.
+// Supports:
+//   - ${VAR} - simple variable reference
+//   - ${VAR:-default} - variable with default value if not set
+//   - $VAR - simple variable reference (without braces)
 func (l *McpConfigLoader) expandString(s string) string {
-	if s == "" || l.envProvider == nil {
+	if s == "" {
 		return s
 	}
 
-	// Handle ${VAR} and $VAR patterns
 	result := s
 
-	// Replace ${VAR} patterns
+	// Replace ${VAR} and ${VAR:-default} patterns
 	for {
 		start := strings.Index(result, "${")
 		if start == -1 {
@@ -266,17 +269,30 @@ func (l *McpConfigLoader) expandString(s string) string {
 		}
 		end += start
 
-		varName := result[start+2 : end]
+		varContent := result[start+2 : end]
+		varName := varContent
+		defaultValue := ""
+
+		// Check for :- syntax (default value)
+		if idx := strings.Index(varContent, ":-"); idx != -1 {
+			varName = varContent[:idx]
+			defaultValue = varContent[idx+2:]
+		}
+
 		varValue := ""
 		if l.envProvider != nil {
 			varValue = l.envProvider(varName)
 		}
+		if varValue == "" {
+			varValue = defaultValue
+		}
+
 		result = result[:start] + varValue + result[end+1:]
 	}
 
-	// Replace $VAR patterns (simple form)
+	// Replace $VAR patterns (simple form without braces)
 	for i := 0; i < len(result); i++ {
-		if result[i] == '$' && i+1 < len(result) {
+		if result[i] == '$' && i+1 < len(result) && result[i+1] != '{' {
 			j := i + 1
 			for j < len(result) && (result[j] >= 'a' && result[j] <= 'z' || result[j] >= 'A' && result[j] <= 'Z' || result[j] >= '0' && result[j] <= '9' || result[j] == '_') {
 				j++

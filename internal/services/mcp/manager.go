@@ -300,17 +300,12 @@ func (m *ConnectionManager) saveConfig() error {
 	return os.WriteFile(m.configPath, data, 0644)
 }
 
-// extractServerFromToolName extracts the server name from an MCP tool name
+// extractServerFromToolName extracts the server name from an MCP tool name.
+// Uses McpInfoFromString for correct parsing (handles server names with single underscores).
 func extractServerFromToolName(toolName string) string {
-	if len(toolName) < 5 || toolName[:5] != "mcp__" {
+	info := McpInfoFromString(toolName)
+	if info == nil {
 		return ""
 	}
-
-	rest := toolName[5:]
-	for i, c := range rest {
-		if c == '_' {
-			return rest[:i]
-		}
-	}
-	return rest
+	return info.ServerName
 }

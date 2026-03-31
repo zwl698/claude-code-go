@@ -4,7 +4,6 @@ package utils
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -12,6 +11,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"claude-code-go/internal/services/oauth"
 )
 
 // APIKeySource represents the source of an API key.
@@ -25,19 +26,16 @@ const (
 )
 
 // OAuthTokens represents OAuth authentication tokens.
-type OAuthTokens struct {
-	AccessToken  string `json:"accessToken"`
-	RefreshToken string `json:"refreshToken"`
-	ExpiresAt    int64  `json:"expiresAt"`
-	Scopes       string `json:"scopes"`
-}
+// Deprecated: Use oauth.OAuthTokens from internal/services/oauth instead.
+type OAuthTokens = oauth.OAuthTokens
 
 // AuthManager manages authentication state.
 type AuthManager struct {
 	mu              sync.RWMutex
 	apiKey          string
 	apiKeySource    APIKeySource
-	oauthTokens     *OAuthTokens
+	oauthClient     *oauth.OAuthClient
+	oauthTokens     *oauth.OAuthTokens
 	isSubscriber    bool
 	apiKeyHelperTTL time.Duration
 	apiKeyCache     *apiKeyCache
@@ -53,6 +51,7 @@ func NewAuthManager() *AuthManager {
 	return &AuthManager{
 		apiKeySource:    APIKeySourceNone,
 		apiKeyHelperTTL: 5 * time.Minute,
+		oauthClient:     oauth.NewOAuthClient(),
 	}
 }
 
@@ -79,14 +78,14 @@ func (a *AuthManager) SetAPIKey(key string, source APIKeySource) {
 }
 
 // GetOAuthTokens returns the OAuth tokens.
-func (a *AuthManager) GetOAuthTokens() *OAuthTokens {
+func (a *AuthManager) GetOAuthTokens() *oauth.OAuthTokens {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
 	return a.oauthTokens
 }
 
 // SetOAuthTokens sets the OAuth tokens.
-func (a *AuthManager) SetOAuthTokens(tokens *OAuthTokens) {
+func (a *AuthManager) SetOAuthTokens(tokens *oauth.OAuthTokens) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.oauthTokens = tokens
@@ -170,66 +169,44 @@ func (a *AuthManager) GetAPIKeyFromAPIKeyHelper(ctx context.Context) (string, er
 
 // LoadOAuthTokens loads OAuth tokens from the config file.
 func (a *AuthManager) LoadOAuthTokens() error {
-	configDir, err := GetConfigDir()
+	tokens, err := a.oauthClient.LoadOAuthTokens()
 	if err != nil {
 		return err
 	}
-
-	tokenPath := filepath.Join(configDir, "oauth-tokens.json")
-	data, err := os.ReadFile(tokenPath)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil // No tokens file is not an error
-		}
-		return err
+	if tokens != nil {
+		a.SetOAuthTokens(tokens)
 	}
-
-	var tokens OAuthTokens
-	if err := json.Unmarshal(data, &tokens); err != nil {
-		return err
-	}
-
-	a.SetOAuthTokens(&tokens)
 	return nil
 }
 
 // SaveOAuthTokens saves OAuth tokens to the config file.
-func (a *AuthManager) SaveOAuthTokens(tokens *OAuthTokens) error {
-	configDir, err := GetConfigDir()
-	if err != nil {
-		return err
-	}
-
-	tokenPath := filepath.Join(configDir, "oauth-tokens.json")
-	data, err := json.MarshalIndent(tokens, "", "  ")
-	if err != nil {
-		return err
-	}
-
-	return os.WriteFile(tokenPath, data, 0600)
+func (a *AuthManager) SaveOAuthTokens(tokens *oauth.OAuthTokens) error {
+	return a.oauthClient.SaveOAuthTokens(tokens)
 }
 
 // CheckAndRefreshOAuthTokenIfNeeded checks if the OAuth token needs refresh.
 func (a *AuthManager) CheckAndRefreshOAuthTokenIfNeeded(ctx context.Context) error {
-	tokens := a.GetOAuthTokens()
-	if tokens == nil {
-		return nil
+	_, err := a.oauthClient.CheckAndRefreshOAuthTokenIfNeeded(ctx, false)
+	// Update cached tokens after refresh
+	if tokens := a.oauthClient.GetOAuthTokens(); tokens != nil {
+		a.SetOAuthTokens(tokens)
 	}
-
-	// Check if token is expired or about to expire (5 minute buffer)
-	if tokens.ExpiresAt == 0 || time.Now().Add(5*time.Minute).Unix() > tokens.ExpiresAt {
-		// Token needs refresh
-		return a.refreshOAuthToken(ctx)
-	}
-
-	return nil
+	return err
 }
 
-// refreshOAuthToken refreshes the OAuth token.
-func (a *AuthManager) refreshOAuthToken(ctx context.Context) error {
-	// This would normally call the OAuth refresh endpoint
-	// For now, we just log that a refresh is needed
-	return fmt.Errorf("OAuth token refresh not implemented")
+// HandleOAuth401Error handles a 401 error for OAuth tokens.
+func (a *AuthManager) HandleOAuth401Error(ctx context.Context, failedAccessToken string) (bool, error) {
+	result, err := a.oauthClient.HandleOAuth401Error(ctx, failedAccessToken)
+	// Update cached tokens after handling
+	if tokens := a.oauthClient.GetOAuthTokens(); tokens != nil {
+		a.SetOAuthTokens(tokens)
+	}
+	return result, err
+}
+
+// GetOAuthClient returns the OAuth client.
+func (a *AuthManager) GetOAuthClient() *oauth.OAuthClient {
+	return a.oauthClient
 }
 
 // GetConfigDir returns the config directory.
@@ -248,11 +225,12 @@ func GetConfigDir() (string, error) {
 }
 
 // IsOAuthTokenExpired checks if the OAuth token is expired.
-func (tokens *OAuthTokens) IsOAuthTokenExpired() bool {
-	if tokens == nil || tokens.ExpiresAt == 0 {
+// Deprecated: Use oauth.IsOAuthTokenExpired instead.
+func IsOAuthTokenExpired(tokens *OAuthTokens) bool {
+	if tokens == nil {
 		return true
 	}
-	return time.Now().Unix() >= tokens.ExpiresAt
+	return oauth.IsOAuthTokenExpired(tokens.ExpiresAt)
 }
 
 // GetAuthMethod returns the current authentication method.

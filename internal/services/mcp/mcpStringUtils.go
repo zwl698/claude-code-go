@@ -61,9 +61,11 @@ func GetMcpDisplayName(fullName, serverName string) string {
 // ExtractMcpToolDisplayName extracts just the tool/command display name from a userFacingName.
 // For example, "github - Add comment to issue (MCP)" returns "Add comment to issue".
 func ExtractMcpToolDisplayName(userFacingName string) string {
-	// Remove the (MCP) suffix if present
-	withoutSuffix := strings.TrimSuffix(userFacingName, "(MCP)")
-	withoutSuffix = strings.TrimSpace(withoutSuffix)
+	// Remove the (MCP) suffix if present (with optional surrounding whitespace)
+	withoutSuffix := strings.TrimSpace(strings.TrimSuffix(
+		strings.TrimSuffix(userFacingName, " (MCP)"),
+		"(MCP)",
+	))
 
 	// Remove the server prefix (everything before " - ")
 	dashIndex := strings.Index(withoutSuffix, " - ")
@@ -72,4 +74,21 @@ func ExtractMcpToolDisplayName(userFacingName string) string {
 	}
 
 	return withoutSuffix
+}
+
+// ToolForPermission represents a tool for permission checking
+type ToolForPermission struct {
+	Name    string
+	McpInfo *McpInfo
+}
+
+// GetToolNameForPermissionCheck returns the name to use for permission rule matching.
+// For MCP tools, uses the fully qualified mcp__server__tool name so that
+// deny rules targeting builtins (e.g., "Write") don't match unprefixed MCP
+// replacements that share the same display name. Falls back to tool.Name.
+func GetToolNameForPermissionCheck(tool ToolForPermission) string {
+	if tool.McpInfo != nil {
+		return BuildMcpToolName(tool.McpInfo.ServerName, tool.McpInfo.ToolName)
+	}
+	return tool.Name
 }

@@ -10,7 +10,7 @@
 ## 📖 概述
 
 本项目通过 `@anthropic-ai/claude-code` npm 发布包内附带的 Source Map（`cli.js.map`）还原了 TypeScript 源码（版本 2.1.88），并将其翻译为 Go 语言实现。
-
+项目学习文档：https://nangongwentian-fe.github.io/learn-claude-source/
 **还原规模：**
 
 - 还原文件数：**4756** 个（含 1884 个 `.ts` / `.tsx` 源文件）

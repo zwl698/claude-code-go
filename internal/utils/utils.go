@@ -16,15 +16,9 @@ import (
 // ========================================
 
 // FileExists checks if a file exists.
+// Deprecated: Use PathExists from file.go instead.
 func FileExists(path string) bool {
-	_, err := os.Stat(path)
-	return err == nil
-}
-
-// IsDir checks if a path is a directory.
-func IsDir(path string) bool {
-	info, err := os.Stat(path)
-	return err == nil && info.IsDir()
+	return PathExists(path)
 }
 
 // ReadFileLines reads a file and returns lines.
@@ -46,15 +40,6 @@ func ReadFileLines(path string) ([]string, error) {
 // EnsureDir ensures a directory exists.
 func EnsureDir(path string) error {
 	return os.MkdirAll(path, 0755)
-}
-
-// ExpandPath expands ~ and environment variables in a path.
-func ExpandPath(path string) string {
-	if strings.HasPrefix(path, "~/") {
-		home, _ := os.UserHomeDir()
-		path = filepath.Join(home, path[2:])
-	}
-	return os.ExpandEnv(path)
 }
 
 // ========================================
@@ -287,4 +272,3 @@ func Values[K comparable, V any](m map[K]V) []V {
 	}
 	return result
 }
-

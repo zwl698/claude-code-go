@@ -296,10 +296,20 @@ type TungstenCommand struct {
 	Timestamp time.Time `json:"timestamp"`
 }
 
+// subscriberID is used to identify subscribers for removal.
+type subscriberID uint64
+
+// subscriber wraps a callback with a unique ID for removal.
+type subscriber struct {
+	id subscriberID
+	fn func(*AppState)
+}
+
 // AppStateStore manages the application state with reactive updates.
 type AppStateStore struct {
 	state     *AppState
-	listeners []func(*AppState)
+	listeners []subscriber
+	nextID    subscriberID
 	mu        sync.RWMutex
 }
 
@@ -307,12 +317,23 @@ type AppStateStore struct {
 func NewAppStateStore() *AppStateStore {
 	return &AppStateStore{
 		state: &AppState{
-			Tasks:             make(map[string]TaskStateBase),
-			AgentNameRegistry: make(map[string]AgentId),
-			Todos:             make(map[string]TodoList),
-			Settings:          SettingsJson{},
+			Tasks:                 make(map[string]TaskStateBase),
+			AgentNameRegistry:     make(map[string]AgentId),
+			Todos:                 make(map[string]TodoList),
+			Settings:              SettingsJson{},
+			ToolPermissionContext: GetEmptyToolPermissionContext(),
+			MCP: MCPState{
+				Resources: make(map[string][]ServerResource),
+			},
+			SessionHooks: SessionHooksState{
+				Registered: make(map[string]HookConfig),
+			},
+			FileHistory: FileHistoryState{
+				Files: make(map[string]FileHistoryEntry),
+			},
+			TungstenActiveSession: nil,
 		},
-		listeners: make([]func(*AppState), 0),
+		listeners: make([]subscriber, 0),
 	}
 }
 
@@ -327,12 +348,12 @@ func (s *AppStateStore) Get() *AppState {
 func (s *AppStateStore) Set(newState *AppState) {
 	s.mu.Lock()
 	s.state = newState
-	listeners := make([]func(*AppState), len(s.listeners))
+	listeners := make([]subscriber, len(s.listeners))
 	copy(listeners, s.listeners)
 	s.mu.Unlock()
 
-	for _, listener := range listeners {
-		listener(newState)
+	for _, sub := range listeners {
+		sub.fn(newState)
 	}
 }
 
@@ -340,30 +361,36 @@ func (s *AppStateStore) Set(newState *AppState) {
 func (s *AppStateStore) Update(updater func(*AppState) *AppState) {
 	s.mu.Lock()
 	s.state = updater(s.state)
-	listeners := make([]func(*AppState), len(s.listeners))
+	listeners := make([]subscriber, len(s.listeners))
 	copy(listeners, s.listeners)
 	s.mu.Unlock()
 
-	for _, listener := range listeners {
-		listener(s.state)
+	for _, sub := range listeners {
+		sub.fn(s.state)
 	}
 }
 
-// Subscribe adds a listener for state changes.
-func (s *AppStateStore) Subscribe(listener func(*AppState)) {
+// Subscribe adds a listener for state changes. Returns a cancel function.
+func (s *AppStateStore) Subscribe(listener func(*AppState)) func() {
 	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.listeners = append(s.listeners, listener)
+	s.nextID++
+	id := s.nextID
+	s.listeners = append(s.listeners, subscriber{id: id, fn: listener})
+	s.mu.Unlock()
+
+	return func() {
+		s.Unsubscribe(id)
+	}
 }
 
-// Unsubscribe removes a listener.
-func (s *AppStateStore) Unsubscribe(listener func(*AppState)) {
+// Unsubscribe removes a listener by its subscription ID.
+func (s *AppStateStore) Unsubscribe(id subscriberID) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	for i, l := range s.listeners {
-		if &l == &listener {
+	for i, sub := range s.listeners {
+		if sub.id == id {
 			s.listeners = append(s.listeners[:i], s.listeners[i+1:]...)
-			break
+			return
 		}
 	}
 }

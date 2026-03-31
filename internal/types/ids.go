@@ -14,7 +14,13 @@ type SessionId string
 
 // AgentId uniquely identifies a subagent within a session.
 // When present, indicates the context is a subagent (not the main session).
+// The zero value (empty string "") represents an invalid/missing AgentId.
 type AgentId string
+
+// IsValid checks whether the AgentId is valid (non-empty and matches pattern).
+func (a AgentId) IsValid() bool {
+	return a != "" && agentIdPattern.MatchString(string(a))
+}
 
 // AsSessionId casts a raw string to SessionId.
 // Use sparingly - prefer GetSessionId() when possible.
@@ -32,12 +38,13 @@ func AsAgentId(id string) AgentId {
 var agentIdPattern = regexp.MustCompile(`^a(?:.+-)?[0-9a-f]{16}$`)
 
 // ToAgentId validates and brands a string as AgentId.
-// Returns empty string if the string doesn't match the pattern.
+// Returns the AgentId if valid, or an empty AgentId (use .IsValid() to check).
+// Matches the format: a + optional <label>- + 16 hex chars.
 func ToAgentId(s string) AgentId {
 	if agentIdPattern.MatchString(s) {
 		return AgentId(s)
 	}
-	return ""
+	return "" // Invalid AgentId - caller should use .IsValid() to check
 }
 
 // CreateAgentId generates a new unique AgentId.
@@ -56,11 +63,6 @@ func (s SessionId) String() string {
 // String returns the string representation of the AgentId.
 func (a AgentId) String() string {
 	return string(a)
-}
-
-// IsValid checks if the AgentId matches the expected pattern.
-func (a AgentId) IsValid() bool {
-	return agentIdPattern.MatchString(string(a))
 }
 
 // GenerateTaskId generates a unique task ID with the given type prefix.

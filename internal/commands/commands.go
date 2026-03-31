@@ -7,10 +7,12 @@ import (
 )
 
 // CommandResult represents the result of command execution.
+// Matches TypeScript LocalCommandResult type.
 type CommandResult struct {
-	Type    string `json:"type"` // text | compact | skip
-	Value   string `json:"value,omitempty"`
-	Display string `json:"display,omitempty"` // skip | system | user
+	Type           string      `json:"type"`                     // text | compact | skip
+	Value          string      `json:"value,omitempty"`          // For type="text"
+	Display        string      `json:"display,omitempty"`        // skip | system | user
+	CompactionInfo interface{} `json:"compactionInfo,omitempty"` // For type="compact"
 }
 
 // CommandContext provides context for command execution.
@@ -29,6 +31,58 @@ type CommandHandler interface {
 	Execute(ctx context.Context, args string, context *CommandContext) (*CommandResult, error)
 	IsEnabled() bool
 	IsHidden() bool
+}
+
+// Command represents the full command type (discriminated union).
+// Matches TypeScript Command = CommandBase & (PromptCommand | LocalCommand | LocalJSXCommand)
+type Command struct {
+	// Common fields (from CommandBase)
+	Type                   string        `json:"type"` // prompt | local | local-jsx
+	Name                   string        `json:"name"`
+	Aliases                []string      `json:"aliases,omitempty"`
+	Description            string        `json:"description"`
+	HasUserSpecifiedDesc   bool          `json:"hasUserSpecifiedDescription,omitempty"`
+	IsEnabled              func() bool   `json:"-"`
+	IsHidden               bool          `json:"isHidden,omitempty"`
+	IsMcp                  bool          `json:"isMcp,omitempty"`
+	ArgumentHint           string        `json:"argumentHint,omitempty"`
+	WhenToUse              string        `json:"whenToUse,omitempty"`
+	Version                string        `json:"version,omitempty"`
+	DisableModelInvocation bool          `json:"disableModelInvocation,omitempty"`
+	UserInvocable          bool          `json:"userInvocable,omitempty"`
+	LoadedFrom             string        `json:"loadedFrom,omitempty"`
+	Kind                   string        `json:"kind,omitempty"`
+	Immediate              bool          `json:"immediate,omitempty"`
+	IsSensitive            bool          `json:"isSensitive,omitempty"`
+	UserFacingName         func() string `json:"-"`
+	Availability           []string      `json:"availability,omitempty"` // claude-ai | console
+
+	// For type="prompt"
+	ProgressMessage string   `json:"progressMessage,omitempty"`
+	ContentLength   int      `json:"contentLength,omitempty"`
+	AllowedTools    []string `json:"allowedTools,omitempty"`
+
+	// For type="local"
+	SupportsNonInteractive bool `json:"supportsNonInteractive,omitempty"`
+
+	// Execution callback (set at load time)
+	ExecuteFunc func(ctx context.Context, args string, context *CommandContext) (*CommandResult, error) `json:"-"`
+}
+
+// GetCommandName resolves the user-visible name, falling back to cmd.Name.
+func GetCommandName(cmd *Command) string {
+	if cmd.UserFacingName != nil {
+		return cmd.UserFacingName()
+	}
+	return cmd.Name
+}
+
+// IsCommandEnabled resolves whether the command is enabled, defaulting to true.
+func IsCommandEnabled(cmd *Command) bool {
+	if cmd.IsEnabled != nil {
+		return cmd.IsEnabled()
+	}
+	return true
 }
 
 // Registry manages all available commands.

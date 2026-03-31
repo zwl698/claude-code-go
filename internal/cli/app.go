@@ -11,11 +11,12 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
-	"claude-code/internal/commands"
-	"claude-code/internal/query"
-	"claude-code/internal/tools"
-	"claude-code/internal/types"
-	"claude-code/internal/ui"
+	"claude-code-go/internal/commands"
+	"claude-code-go/internal/query"
+	"claude-code-go/internal/tools"
+	"claude-code-go/internal/types"
+	"claude-code-go/internal/ui"
+	"claude-code-go/pkg/api"
 )
 
 // App represents the CLI application.
@@ -25,6 +26,7 @@ type App struct {
 	toolRegistry  *tools.Registry
 	queryEngine   *query.QueryEngine
 	uiModel       *ui.Model
+	apiClient     *api.Client
 	ctx           context.Context
 	cancel        context.CancelFunc
 	initialPrompt string
@@ -40,6 +42,8 @@ type Config struct {
 	PermissionMode string
 	Cwd            string
 	MaxTurns       int
+	APIKey         string
+	BaseURL        string
 }
 
 // NewApp creates a new CLI application.
@@ -74,11 +78,18 @@ func (a *App) Initialize() error {
 	a.toolRegistry = tools.NewToolRegistry()
 	a.registerTools()
 
+	// Initialize API client
+	a.apiClient = api.NewClient(api.Config{
+		APIKey:  a.config.APIKey,
+		BaseURL: a.config.BaseURL,
+	})
+
 	// Initialize query engine
 	queryConfig := query.QueryEngineConfig{
-		Cwd:      cwd,
-		Tools:    a.toolRegistry.List(),
-		MaxTurns: a.config.MaxTurns,
+		Cwd:       cwd,
+		Tools:     a.toolRegistry.List(),
+		MaxTurns:  a.config.MaxTurns,
+		APIClient: a.apiClient,
 		GetAppState: func() *types.AppState {
 			return &types.AppState{
 				MainLoopModel: a.config.Model,

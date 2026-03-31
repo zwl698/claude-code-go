@@ -10,17 +10,17 @@ import (
 	"strings"
 	"time"
 
-	"claude-code/internal/types"
+	"claude-code-go/internal/types"
 )
 
 // BaseTool provides common functionality for all tools.
 type BaseTool struct {
-	name         string
-	aliases      []string
-	description  string
-	inputSchema  types.ToolInputJSONSchema
-	isEnabled    bool
-	isReadOnly   bool
+	name          string
+	aliases       []string
+	description   string
+	inputSchema   types.ToolInputJSONSchema
+	isEnabled     bool
+	isReadOnly    bool
 	isDestructive bool
 }
 
@@ -34,21 +34,41 @@ func NewBaseTool(name string, description string) *BaseTool {
 	}
 }
 
-func (t *BaseTool) Name() string              { return t.name }
-func (t *BaseTool) Aliases() []string         { return t.aliases }
+func (t *BaseTool) Name() string      { return t.name }
+func (t *BaseTool) Aliases() []string { return t.aliases }
 func (t *BaseTool) Description(ctx context.Context, input json.RawMessage, options types.ToolOptions) (string, error) {
 	return t.description, nil
 }
-func (t *BaseTool) InputSchema() types.ToolInputJSONSchema { return t.inputSchema }
-func (t *BaseTool) IsEnabled() bool                        { return t.isEnabled }
+func (t *BaseTool) InputSchema() types.ToolInputJSONSchema       { return t.inputSchema }
+func (t *BaseTool) IsEnabled() bool                              { return t.isEnabled }
 func (t *BaseTool) IsConcurrencySafe(input json.RawMessage) bool { return false }
-func (t *BaseTool) IsReadOnly(input json.RawMessage) bool       { return t.isReadOnly }
-func (t *BaseTool) IsDestructive(input json.RawMessage) bool    { return t.isDestructive }
+func (t *BaseTool) IsReadOnly(input json.RawMessage) bool        { return t.isReadOnly }
+func (t *BaseTool) IsDestructive(input json.RawMessage) bool     { return t.isDestructive }
 
 func (t *BaseTool) CheckPermissions(ctx context.Context, input json.RawMessage, context *types.ToolContext) (*types.PermissionResult, error) {
 	return &types.PermissionResult{
 		Behavior: types.PermissionBehaviorAllow,
 	}, nil
+}
+
+func (t *BaseTool) UserFacingName(input json.RawMessage) string {
+	return t.name
+}
+
+func (t *BaseTool) MapToolResultToAPI(content interface{}, toolUseID string) (interface{}, error) {
+	return map[string]interface{}{
+		"type":        "tool_result",
+		"tool_use_id": toolUseID,
+		"content":     content,
+	}, nil
+}
+
+func (t *BaseTool) RenderToolUseMessage(input json.RawMessage, options types.ToolRenderOptions) string {
+	return fmt.Sprintf("Using tool: %s", t.name)
+}
+
+func (t *BaseTool) MaxResultSizeChars() int {
+	return 100000 // Default max result size
 }
 
 // ========================================
@@ -78,8 +98,8 @@ func NewBashTool() *BashTool {
 					},
 				},
 			},
-			isEnabled: true,
-			isReadOnly: false,
+			isEnabled:     true,
+			isReadOnly:    false,
 			isDestructive: true,
 		},
 	}
@@ -236,8 +256,8 @@ func NewFileWriteTool() *FileWriteTool {
 					},
 				},
 			},
-			isEnabled:    true,
-			isReadOnly:   false,
+			isEnabled:     true,
+			isReadOnly:    false,
 			isDestructive: true,
 		},
 	}
@@ -302,8 +322,8 @@ func NewFileEditTool() *FileEditTool {
 					},
 				},
 			},
-			isEnabled:    true,
-			isReadOnly:   false,
+			isEnabled:     true,
+			isReadOnly:    false,
 			isDestructive: true,
 		},
 	}
@@ -329,11 +349,27 @@ func (t *FileEditTool) Call(ctx context.Context, args json.RawMessage, toolCtx *
 		}, nil
 	}
 
-	// Replace string
-	newContent := strings.ReplaceAll(string(content), input.OldString, input.NewString)
-	if !input.ReplaceAll && strings.Count(string(content), input.OldString) > 1 {
-		// Only replace first occurrence
-		newContent = strings.Replace(string(content), input.OldString, input.NewString, 1)
+	// Replace string - check for uniqueness when not replacing all
+	oldContent := string(content)
+	var newContent string
+	if input.ReplaceAll {
+		newContent = strings.ReplaceAll(oldContent, input.OldString, input.NewString)
+	} else {
+		count := strings.Count(oldContent, input.OldString)
+		if count == 0 {
+			return &types.ToolResult{
+				Error:     fmt.Errorf("old_string not found in file"),
+				ToolUseID: toolCtx.ToolUseId,
+			}, nil
+		}
+		if count > 1 {
+			return &types.ToolResult{
+				Error:     fmt.Errorf("old_string appears %d times; either provide more context to make it unique or use replace_all", count),
+				ToolUseID: toolCtx.ToolUseId,
+			}, nil
+		}
+		// Exactly one occurrence - replace it
+		newContent = strings.Replace(oldContent, input.OldString, input.NewString, 1)
 	}
 
 	// Write back
@@ -549,4 +585,3 @@ func (r *Registry) ListEnabled() []types.Tool {
 	}
 	return result
 }
-

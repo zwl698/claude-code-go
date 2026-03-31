@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 	"sync"
 
-	"claude-code/internal/types"
+	"claude-code-go/internal/types"
 )
 
 // ConfigManager manages application configuration.

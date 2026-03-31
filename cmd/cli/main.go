@@ -6,7 +6,7 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"claude-code/internal/cli"
+	"claude-code-go/internal/cli"
 )
 
 var (

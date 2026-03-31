@@ -2,13 +2,15 @@ package query
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"sync"
 	"time"
 
-	"claude-code/internal/types"
-	"claude-code/pkg/api"
+	"claude-code-go/internal/types"
+	"claude-code-go/pkg/api"
 )
 
 // QueryEngineConfig contains configuration for the QueryEngine.
@@ -31,6 +33,7 @@ type QueryEngineConfig struct {
 	MaxBudgetUsd       float64
 	Verbose            bool
 	AbortController    *types.AbortController
+	APIClient          *api.Client // API client for Claude API calls
 }
 
 // QueryEngine owns the query lifecycle and session state for a conversation.
@@ -364,11 +367,12 @@ func (e *QueryEngine) convertToolsForAPI() []api.ToolDefinition {
 	return tools
 }
 
-// callAPI calls the Anthropic API.
+// callAPI calls the Anthropic API using the configured client.
 func (e *QueryEngine) callAPI(ctx context.Context, req api.MessageRequest) (*api.MessageResponse, error) {
-	// This would use the API client
-	// For now, return a placeholder
-	return nil, fmt.Errorf("API client not configured")
+	if e.config.APIClient == nil {
+		return nil, fmt.Errorf("API client not configured")
+	}
+	return e.config.APIClient.CreateMessage(ctx, req)
 }
 
 // extractToolUseBlocks extracts tool use blocks from a response.
@@ -526,11 +530,18 @@ func (e *QueryEngine) GetSessionID() string {
 // Helper functions
 
 func generateUUID() string {
-	return fmt.Sprintf("%d", time.Now().UnixNano())
+	b := make([]byte, 16)
+	rand.Read(b)
+	b[6] = (b[6] & 0x0f) | 0x40 // Version 4
+	b[8] = (b[8] & 0x3f) | 0x80 // Variant 10
+	return fmt.Sprintf("%08x-%04x-%04x-%04x-%012x",
+		b[0:4], b[4:6], b[6:8], b[8:10], b[10:16])
 }
 
 func generateSessionID() string {
-	return fmt.Sprintf("session_%d", time.Now().UnixNano())
+	b := make([]byte, 12)
+	rand.Read(b)
+	return "session_" + hex.EncodeToString(b)
 }
 
 func mustMarshalJSON(v interface{}) json.RawMessage {

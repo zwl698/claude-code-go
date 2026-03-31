@@ -55,36 +55,29 @@ type FileStateCache interface {
 }
 
 // Tool interface defines the contract for all tools.
+// Translated from TypeScript Tool type with core methods.
+// Optional methods (search hint, user-facing name, etc.) are provided via
+// separate interfaces that tools can implement.
 type Tool interface {
-	// Name returns the tool's name.
+	// Core methods (all tools must implement)
 	Name() string
-
-	// Aliases returns optional aliases for the tool.
 	Aliases() []string
-
-	// Description returns a description of the tool.
 	Description(ctx context.Context, input json.RawMessage, options ToolOptions) (string, error)
-
-	// InputSchema returns the JSON schema for the tool's input.
 	InputSchema() ToolInputJSONSchema
-
-	// Call executes the tool.
 	Call(ctx context.Context, args json.RawMessage, context *ToolContext, canUseTool CanUseToolFunc, parentMessage *Message, onProgress func(progress interface{})) (*ToolResult, error)
-
-	// IsEnabled returns whether the tool is currently enabled.
 	IsEnabled() bool
-
-	// IsConcurrencySafe returns whether the tool can be called concurrently.
 	IsConcurrencySafe(input json.RawMessage) bool
-
-	// IsReadOnly returns whether the tool only reads (doesn't modify files).
 	IsReadOnly(input json.RawMessage) bool
-
-	// IsDestructive returns whether the tool performs destructive operations.
 	IsDestructive(input json.RawMessage) bool
-
-	// CheckPermissions checks if the tool can be used with the given input.
 	CheckPermissions(ctx context.Context, input json.RawMessage, context *ToolContext) (*PermissionResult, error)
+
+	// Input/output conversion methods (required for API integration)
+	UserFacingName(input json.RawMessage) string
+	MapToolResultToAPI(content interface{}, toolUseID string) (interface{}, error)
+	RenderToolUseMessage(input json.RawMessage, options ToolRenderOptions) string
+
+	// Optional configuration
+	MaxResultSizeChars() int
 }
 
 // CanUseToolFunc is a function type for checking tool permissions.
@@ -182,6 +175,12 @@ type ThinkingConfig struct {
 	Enabled     bool   `json:"enabled"`
 	BudgetToken int    `json:"budgetToken,omitempty"`
 	Type        string `json:"type,omitempty"`
+}
+
+// ToolRenderOptions contains options for rendering tool use messages.
+type ToolRenderOptions struct {
+	Theme   string `json:"theme,omitempty"`
+	Verbose bool   `json:"verbose,omitempty"`
 }
 
 // MCPServerConnection represents a connection to an MCP server.

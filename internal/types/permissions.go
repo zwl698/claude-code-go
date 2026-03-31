@@ -73,6 +73,7 @@ const (
 )
 
 // PermissionUpdate represents an update operation for permission configuration.
+// It is a discriminated union on the 'type' field, matching the TypeScript source.
 type PermissionUpdate struct {
 	Type        PermissionUpdateType        `json:"type"`
 	Destination PermissionUpdateDestination `json:"destination"`
@@ -80,6 +81,36 @@ type PermissionUpdate struct {
 	Behavior    PermissionBehavior          `json:"behavior,omitempty"`
 	Mode        PermissionMode              `json:"mode,omitempty"`
 	Directories []string                    `json:"directories,omitempty"`
+}
+
+// NewPermissionAddRulesUpdate creates an add-rules update.
+func NewPermissionAddRulesUpdate(dest PermissionUpdateDestination, rules []PermissionRuleValue, behavior PermissionBehavior) PermissionUpdate {
+	return PermissionUpdate{Type: UpdateTypeAddRules, Destination: dest, Rules: rules, Behavior: behavior}
+}
+
+// NewPermissionReplaceRulesUpdate creates a replace-rules update.
+func NewPermissionReplaceRulesUpdate(dest PermissionUpdateDestination, rules []PermissionRuleValue, behavior PermissionBehavior) PermissionUpdate {
+	return PermissionUpdate{Type: UpdateTypeReplaceRules, Destination: dest, Rules: rules, Behavior: behavior}
+}
+
+// NewPermissionRemoveRulesUpdate creates a remove-rules update.
+func NewPermissionRemoveRulesUpdate(dest PermissionUpdateDestination, rules []PermissionRuleValue, behavior PermissionBehavior) PermissionUpdate {
+	return PermissionUpdate{Type: UpdateTypeRemoveRules, Destination: dest, Rules: rules, Behavior: behavior}
+}
+
+// NewPermissionSetModeUpdate creates a set-mode update.
+func NewPermissionSetModeUpdate(dest PermissionUpdateDestination, mode PermissionMode) PermissionUpdate {
+	return PermissionUpdate{Type: UpdateTypeSetMode, Destination: dest, Mode: mode}
+}
+
+// NewPermissionAddDirectoriesUpdate creates an add-directories update.
+func NewPermissionAddDirectoriesUpdate(dest PermissionUpdateDestination, dirs []string) PermissionUpdate {
+	return PermissionUpdate{Type: UpdateTypeAddDirectories, Destination: dest, Directories: dirs}
+}
+
+// NewPermissionRemoveDirectoriesUpdate creates a remove-directories update.
+func NewPermissionRemoveDirectoriesUpdate(dest PermissionUpdateDestination, dirs []string) PermissionUpdate {
+	return PermissionUpdate{Type: UpdateTypeRemoveDirectories, Destination: dest, Directories: dirs}
 }
 
 type PermissionUpdateType string
@@ -125,6 +156,7 @@ type PendingClassifierCheck struct {
 }
 
 // PermissionDecisionReason explains why a permission decision was made.
+// It is a discriminated union on the 'type' field.
 type PermissionDecisionReason struct {
 	Type string `json:"type"`
 
@@ -147,21 +179,94 @@ type PermissionDecisionReason struct {
 	Reason     string `json:"reason,omitempty"`
 
 	// For type "classifier"
-	Classifier string `json:"classifier,omitempty"`
+	Classifier  string `json:"classifier,omitempty"`
+	ClassReason string `json:"reason,omitempty"` // for type classifier
 
 	// For type "safetyCheck"
 	SafetyCheckReason    string `json:"safetyCheckReason,omitempty"`
 	ClassifierApprovable bool   `json:"classifierApprovable,omitempty"`
+
+	// For type "asyncAgent"
+	AsyncReason string `json:"asyncReason,omitempty"`
+
+	// For type "workingDir"
+	WorkingDirReason string `json:"workingDirReason,omitempty"`
+
+	// For type "sandboxOverride"
+	SandboxOverrideReason string `json:"sandboxOverrideReason,omitempty"`
+
+	// For type "other"
+	OtherReason string `json:"otherReason,omitempty"`
 }
 
 // PermissionResult represents the result of a permission check.
+// It is a discriminated union: allow, deny, ask, or passthrough.
 type PermissionResult struct {
 	Behavior               PermissionBehavior        `json:"behavior"`
 	Message                string                    `json:"message,omitempty"`
+	UpdatedInput           map[string]interface{}    `json:"updatedInput,omitempty"`
 	DecisionReason         *PermissionDecisionReason `json:"decisionReason,omitempty"`
 	Suggestions            []PermissionUpdate        `json:"suggestions,omitempty"`
 	BlockedPath            string                    `json:"blockedPath,omitempty"`
 	PendingClassifierCheck *PendingClassifierCheck   `json:"pendingClassifierCheck,omitempty"`
+	UserModified           bool                      `json:"userModified,omitempty"`
+	ToolUseID              string                    `json:"toolUseID,omitempty"`
+	AcceptFeedback         string                    `json:"acceptFeedback,omitempty"`
+}
+
+// NewPermissionAllowResult creates an allow permission result.
+func NewPermissionAllowResult(updatedInput map[string]interface{}) PermissionResult {
+	return PermissionResult{
+		Behavior:     PermissionBehaviorAllow,
+		UpdatedInput: updatedInput,
+	}
+}
+
+// NewPermissionDenyResult creates a deny permission result.
+func NewPermissionDenyResult(message string, reason *PermissionDecisionReason) PermissionResult {
+	return PermissionResult{
+		Behavior:       PermissionBehaviorDeny,
+		Message:        message,
+		DecisionReason: reason,
+	}
+}
+
+// NewPermissionAskResult creates an ask permission result.
+func NewPermissionAskResult(message string, suggestions []PermissionUpdate) PermissionResult {
+	return PermissionResult{
+		Behavior:    PermissionBehaviorAsk,
+		Message:     message,
+		Suggestions: suggestions,
+	}
+}
+
+// NewPermissionPassthroughResult creates a passthrough permission result.
+func NewPermissionPassthroughResult(message string, suggestions []PermissionUpdate) PermissionResult {
+	return PermissionResult{
+		Behavior:    "passthrough",
+		Message:     message,
+		Suggestions: suggestions,
+	}
+}
+
+// IsAllow returns true if the permission result is an allow.
+func (r *PermissionResult) IsAllow() bool {
+	return r.Behavior == PermissionBehaviorAllow
+}
+
+// IsDeny returns true if the permission result is a deny.
+func (r *PermissionResult) IsDeny() bool {
+	return r.Behavior == PermissionBehaviorDeny
+}
+
+// IsAsk returns true if the permission result requires user prompting.
+func (r *PermissionResult) IsAsk() bool {
+	return r.Behavior == PermissionBehaviorAsk
+}
+
+// IsPassthrough returns true if the permission should be passed through.
+func (r *PermissionResult) IsPassthrough() bool {
+	return r.Behavior == "passthrough"
 }
 
 // ToolPermissionRulesBySource maps permission rules by their source.

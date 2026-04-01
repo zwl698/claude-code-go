@@ -7,14 +7,33 @@
 
 ---
 
-## 📖 概述
+## 📖 项目说明
+
+### 什么是 Claude Code？
+
+Claude Code 是 Anthropic 官方推出的 AI 编程助手命令行工具，可以帮助开发者：
+- 理解和导航代码库
+- 编写和编辑代码
+- 执行终端命令
+- 调试和修复问题
+- 与 MCP (Model Context Protocol) 服务器集成
+
+### 本项目目的
 
 本项目通过 `@anthropic-ai/claude-code` npm 发布包内附带的 Source Map（`cli.js.map`）还原了 TypeScript 源码（版本 2.1.88），并将其翻译为 Go 语言实现。
-项目学习文档：https://nangongwentian-fe.github.io/learn-claude-source/
-**还原规模：**
 
+**还原规模：**
 - 还原文件数：**4756** 个（含 1884 个 `.ts` / `.tsx` 源文件）
 - 还原方式：提取 `cli.js.map` 中的 `sourcesContent` 字段
+
+### 为什么选择 Go 版本？
+
+- **单二进制分发**：无需 Node.js 运行时，编译后单个可执行文件即可运行
+- **跨平台支持**：支持 Linux、macOS、Windows 等多平台
+- **性能优势**：Go 语言的并发模型更适合处理 I/O 密集型任务
+- **易于部署**：静态编译，无外部依赖
+
+项目学习文档：https://nangongwentian-fe.github.io/learn-claude-source/
 
 ---
 
@@ -52,6 +71,258 @@
 - **工具过滤**：基于 URL 模式的工具名称过滤
 - **配置管理**：支持 `${VAR:-default}` 环境变量扩展语法
 - **权限检查**：细粒度的工具权限验证
+
+---
+
+## 🚀 安装部署
+
+### 前置要求
+
+- **Go 版本**：Go 1.26 或更高版本
+- **操作系统**：Linux、macOS、Windows
+- **API 访问**：Anthropic API 密钥或 OAuth 认证
+
+### 方式一：从源码构建
+
+```bash
+# 1. 克隆仓库
+git clone <repository-url>
+cd claude-code-go
+
+# 2. 下载依赖
+go mod download
+
+# 3. 构建
+go build -o claude-code ./cmd/cli
+
+# 4. (可选) 安装到系统路径
+sudo mv claude-code /usr/local/bin/
+```
+
+### 方式二：直接运行
+
+```bash
+# 克隆仓库
+git clone <repository-url>
+cd claude-code-go
+
+# 直接运行
+go run ./cmd/cli [命令] [参数]
+```
+
+### 方式三：交叉编译
+
+```bash
+# Linux AMD64
+GOOS=linux GOARCH=amd64 go build -o claude-code-linux-amd64 ./cmd/cli
+
+# macOS ARM64 (Apple Silicon)
+GOOS=darwin GOARCH=arm64 go build -o claude-code-darwin-arm64 ./cmd/cli
+
+# macOS AMD64 (Intel)
+GOOS=darwin GOARCH=amd64 go build -o claude-code-darwin-amd64 ./cmd/cli
+
+# Windows AMD64
+GOOS=windows GOARCH=amd64 go build -o claude-code-windows-amd64.exe ./cmd/cli
+```
+
+### 验证安装
+
+```bash
+# 检查版本
+claude-code version
+
+# 运行诊断
+claude-code doctor
+```
+
+---
+
+## 📚 如何使用
+
+### 基本用法
+
+```bash
+# 交互式对话
+claude-code
+
+# 带初始提示启动
+claude-code "帮我分析这个项目的结构"
+
+# 指定模型
+claude-code --model claude-sonnet-4-20250514 "优化这段代码"
+
+# 调试模式
+claude-code --debug "为什么这个测试失败了？"
+```
+
+### 命令行参数
+
+| 参数 | 简写 | 说明 |
+|------|------|------|
+| `--debug` | `-d` | 启用调试模式，输出详细日志 |
+| `--verbose` | `-v` | 启用详细输出 |
+| `--print` | `-p` | 打印模式（非交互式） |
+| `--model` | `-m` | 指定使用的模型（如 claude-sonnet-4-20250514） |
+| `--permission-mode` | | 权限模式：default, acceptEdits, bypassPermissions |
+| `--max-turns` | | 最大对话轮数（默认 100） |
+
+### 子命令
+
+```bash
+# 显示版本信息
+claude-code version
+
+# 配置管理
+claude-code config
+
+# MCP 服务器管理
+claude-code mcp
+
+# 运行系统诊断
+claude-code doctor
+```
+
+### 认证配置
+
+#### 使用 API Key
+
+```bash
+# 设置环境变量
+export ANTHROPIC_API_KEY="your-api-key"
+
+# 或者使用 OAuth token
+export ANTHROPIC_AUTH_TOKEN="your-oauth-token"
+```
+
+#### 使用 AWS Bedrock
+
+```bash
+export CLAUDE_CODE_USE_BEDROCK=true
+export AWS_REGION="us-east-1"
+export AWS_ACCESS_KEY_ID="your-access-key"
+export AWS_SECRET_ACCESS_KEY="your-secret-key"
+```
+
+#### 使用 Google Vertex AI
+
+```bash
+export CLAUDE_CODE_USE_VERTEX=true
+# 使用 ADC 认证，需先运行：gcloud auth application-default login
+```
+
+#### 使用 Azure Foundry
+
+```bash
+export CLAUDE_CODE_USE_FOUNDRY=true
+export ANTHROPIC_API_KEY="your-azure-api-key"
+```
+
+---
+
+## 🎯 场景用例
+
+### 1. 代码审查
+
+```bash
+# 审查最近的代码变更
+claude-code "审查 git diff 的变更，指出潜在问题"
+
+# 审查特定文件
+claude-code "审查 src/api/client.go，检查错误处理是否完善"
+```
+
+### 2. 代码重构
+
+```bash
+# 重构建议
+claude-code "重构 internal/services/api/retry.go，使其更易测试"
+
+# 代码优化
+claude-code "优化这个函数的性能，减少内存分配"
+```
+
+### 3. 调试问题
+
+```bash
+# 启用调试模式分析问题
+claude-code --debug "为什么我的程序在处理并发请求时出现死锁？"
+
+# 分析错误日志
+claude-code "分析这个错误日志，找出根本原因：$(cat error.log)"
+```
+
+### 4. 文档生成
+
+```bash
+# 生成函数文档
+claude-code "为 internal/utils/auth.go 中的所有公开函数生成 Go 文档注释"
+
+# 生成 README
+claude-code "为我的新项目生成 README.md，包括安装和使用说明"
+```
+
+### 5. 测试辅助
+
+```bash
+# 生成测试用例
+claude-code "为 internal/services/api/client.go 生成单元测试"
+
+# 分析测试覆盖率
+claude-code "分析测试覆盖率报告，找出未覆盖的关键路径"
+```
+
+### 6. 架构理解
+
+```bash
+# 理解项目结构
+claude-code "解释这个项目的架构设计，包括各模块的职责"
+
+# 代码导航
+claude-code "找到所有实现了 io.Reader 接口的类型"
+```
+
+### 7. 安全审计
+
+```bash
+# 安全检查
+claude-code "检查代码中是否存在 SQL 注入、XSS 等安全漏洞"
+
+# 敏感信息检查
+claude-code "检查代码中是否意外暴露了敏感信息（API key、密码等）"
+```
+
+### 8. 依赖管理
+
+```bash
+# 分析依赖
+claude-code "分析 go.mod 中的依赖，找出可升级的版本"
+
+# 检查漏洞
+claude-code "检查项目依赖是否存在已知安全漏洞"
+```
+
+### 9. CI/CD 集成
+
+```bash
+# 在 CI 中非交互式运行
+claude-code --print --permission-mode bypassPermissions "检查代码是否符合项目规范"
+
+# 自动化代码审查
+claude-code --max-turns 1 "审查当前 PR 的变更并给出建议"
+```
+
+### 10. 多云部署场景
+
+```bash
+# 使用 AWS Bedrock
+export CLAUDE_CODE_USE_BEDROCK=true
+claude-code "生成部署到 AWS Lambda 的配置文件"
+
+# 使用 Google Vertex AI
+export CLAUDE_CODE_USE_VERTEX=true
+claude-code "生成 Cloud Run 的部署配置"
+```
 
 ---
 
@@ -106,6 +377,10 @@ internal/
 │   └── uuid.go           # UUID 生成
 ├── types/                # 类型定义
 └── cli/                  # CLI 入口
+
+cmd/
+└── cli/
+    └── main.go           # 程序入口
 ```
 
 ---
@@ -146,8 +421,71 @@ internal/
 
 ---
 
+## 🤝 贡献指南
+
+欢迎贡献代码！请遵循以下步骤：
+
+1. Fork 本仓库
+2. 创建特性分支 (`git checkout -b feature/amazing-feature`)
+3. 提交更改 (`git commit -m 'Add some amazing feature'`)
+4. 推送到分支 (`git push origin feature/amazing-feature`)
+5. 创建 Pull Request
+
+### 代码规范
+
+- 遵循 [Go 代码规范](https://golang.org/doc/effective_go)
+- 添加必要的单元测试
+- 更新相关文档
+
+---
+
+## 📋 开发路线
+
+- [ ] 完整的 OAuth 认证流程实现
+- [ ] 所有工具函数的 Go 实现
+- [ ] 完整的 MCP 协议支持
+- [ ] Vim 模式支持
+- [ ] 语音交互支持
+- [ ] 插件系统
+
+---
+
+## ❓ 常见问题
+
+### Q: 如何更新到最新版本？
+
+```bash
+git pull origin main
+go build -o claude-code ./cmd/cli
+```
+
+### Q: 遇到认证错误怎么办？
+
+1. 检查 `ANTHROPIC_API_KEY` 或 `ANTHROPIC_AUTH_TOKEN` 是否正确设置
+2. 运行 `claude-code doctor` 检查系统状态
+3. 尝试使用 `--debug` 参数查看详细日志
+
+### Q: 如何查看支持的模型列表？
+
+```bash
+claude-code --help
+# 或查看 Anthropic 官方文档
+```
+
+### Q: 在企业环境中如何使用？
+
+配置 `CLAUDE_CODE_CUSTOM_OAUTH_URL` 使用企业 OAuth 端点，或使用 AWS Bedrock / Azure Foundry 等云服务。
+
+---
+
 ## ⚖️ 声明
 
 - 源码版权归 **Anthropic** 所有
 - 本仓库仅用于技术研究与学习，请勿用于商业用途
 - 如有侵权，请联系删除
+
+---
+
+## 📄 License
+
+本项目仅供学习和研究使用。原始 TypeScript 源码版权归 Anthropic 所有。

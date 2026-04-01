@@ -110,25 +110,11 @@ type AskUserQuestionTool struct {
 func NewAskUserQuestionTool() *AskUserQuestionTool {
 	return &AskUserQuestionTool{
 		BaseTool: &BaseTool{
-			name:        "AskUserQuestion",
-			description: "Ask the user a question and wait for their response",
-			inputSchema: types.ToolInputJSONSchema{
-				Type: "object",
-				Properties: map[string]map[string]interface{}{
-					"question": {
-						"type":        "string",
-						"description": "The question to ask the user",
-					},
-					"suggestions": {
-						"type":        "array",
-						"items":       map[string]interface{}{"type": "string"},
-						"description": "Optional suggested answers",
-					},
-				},
-				Required: []string{"question"},
-			},
-			isEnabled:  true,
-			isReadOnly: true,
+			name:        constants.ToolAskUser,
+			description: constants.DescAskUserQuestion,
+			inputSchema: convertSchema(constants.GetAskUserQuestionToolSchema()),
+			isEnabled:   true,
+			isReadOnly:  true,
 		},
 	}
 }
@@ -478,19 +464,11 @@ type ExitPlanModeTool struct {
 func NewExitPlanModeTool() *ExitPlanModeTool {
 	return &ExitPlanModeTool{
 		BaseTool: &BaseTool{
-			name:        "ExitPlanMode",
-			description: "Exit plan mode and return to normal mode",
-			inputSchema: types.ToolInputJSONSchema{
-				Type: "object",
-				Properties: map[string]map[string]interface{}{
-					"plan_summary": {
-						"type":        "string",
-						"description": "Optional summary of the plan",
-					},
-				},
-			},
-			isEnabled:  true,
-			isReadOnly: true,
+			name:        constants.ToolExitPlanMode,
+			description: constants.DescExitPlanMode,
+			inputSchema: convertSchema(constants.GetExitPlanModeToolSchema()),
+			isEnabled:   true,
+			isReadOnly:  true,
 		},
 	}
 }
@@ -528,20 +506,11 @@ type EnterPlanModeTool struct {
 func NewEnterPlanModeTool() *EnterPlanModeTool {
 	return &EnterPlanModeTool{
 		BaseTool: &BaseTool{
-			name:        "EnterPlanMode",
-			description: "Enter plan mode for structured planning",
-			inputSchema: types.ToolInputJSONSchema{
-				Type: "object",
-				Properties: map[string]map[string]interface{}{
-					"goal": {
-						"type":        "string",
-						"description": "The goal to plan for",
-					},
-				},
-				Required: []string{"goal"},
-			},
-			isEnabled:  true,
-			isReadOnly: true,
+			name:        constants.ToolEnterPlanMode,
+			description: constants.DescEnterPlanMode,
+			inputSchema: convertSchema(constants.GetEnterPlanModeToolSchema()),
+			isEnabled:   true,
+			isReadOnly:  true,
 		},
 	}
 }

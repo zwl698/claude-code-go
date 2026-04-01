@@ -6,9 +6,12 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"os"
+	"runtime"
 	"sync"
 	"time"
 
+	"claude-code-go/internal/constants"
 	"claude-code-go/internal/types"
 	"claude-code-go/pkg/api"
 )
@@ -221,6 +224,11 @@ func (e *QueryEngine) executeQueryLoop(ctx context.Context, output chan<- interf
 			Timestamp: time.Now().UnixMilli(),
 		}
 
+		// Check for max_output_tokens error
+		// Note: The full recovery logic for max_output_tokens is handled at a higher level
+		// (similar to TypeScript's query.ts recovery loop). Here we just detect and signal.
+		// TODO: Implement full recovery loop if needed for SDK consumers.
+
 		// Check for tool use
 		toolUseBlocks := e.extractToolUseBlocks(response)
 		if len(toolUseBlocks) == 0 {
@@ -295,13 +303,36 @@ func (e *QueryEngine) buildSystemPrompt() string {
 	if e.config.CustomSystemPrompt != "" {
 		prompt = e.config.CustomSystemPrompt
 	} else {
-		prompt = `You are Claude Code, an AI assistant specialized in software development.
+		// Build complete system prompt using the constants package
+		cwd := e.config.Cwd
+		if cwd == "" {
+			cwd, _ = os.Getwd()
+		}
 
-You have access to tools for reading, writing, and editing files, running shell commands, searching code, and more.
+		// Check if we're in a git repo
+		isGit := e.isGitRepo(cwd)
 
-Use these tools to help the user with their software development tasks. Always be helpful, accurate, and efficient.
+		// Get shell info
+		shell := os.Getenv("SHELL")
+		if shell == "" {
+			shell = "/bin/sh"
+		}
 
-When making file changes, prefer editing existing files over creating new ones unless the user explicitly requests a new file.`
+		// Get model ID
+		modelId := e.getModel()
+
+		// Build the complete system prompt
+		prompt = constants.BuildSystemPrompt(
+			cwd,
+			isGit,
+			runtime.GOOS,
+			shell,
+			getOSVersion(),
+			modelId,
+			nil, // additional working directories
+			"",  // language preference
+			"",  // scratchpad dir
+		)
 	}
 
 	if e.config.AppendSystemPrompt != "" {
@@ -309,6 +340,45 @@ When making file changes, prefer editing existing files over creating new ones u
 	}
 
 	return prompt
+}
+
+// isGitRepo checks if a directory is a git repository.
+func (e *QueryEngine) isGitRepo(dir string) bool {
+	gitDir := dir + "/.git"
+	if _, err := os.Stat(gitDir); err == nil {
+		return true
+	}
+	// Check parent directories
+	for dir != "/" {
+		dir = dir[:len(dir)-1]
+		if idx := len(dir) - 1; idx >= 0 {
+			for idx >= 0 && dir[idx] != '/' {
+				idx--
+			}
+			if idx > 0 {
+				dir = dir[:idx]
+			}
+		}
+		gitDir = dir + "/.git"
+		if _, err := os.Stat(gitDir); err == nil {
+			return true
+		}
+	}
+	return false
+}
+
+// getOSVersion returns the OS version string.
+func getOSVersion() string {
+	switch runtime.GOOS {
+	case "darwin":
+		return "macOS"
+	case "linux":
+		return "Linux"
+	case "windows":
+		return "Windows"
+	default:
+		return runtime.GOOS
+	}
 }
 
 // getModel returns the model to use.

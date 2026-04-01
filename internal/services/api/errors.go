@@ -83,6 +83,8 @@ const (
 	AssistantMessageErrorInvalidRequest       AssistantMessageError = "invalid_request"
 	AssistantMessageErrorBillingError         AssistantMessageError = "billing_error"
 	AssistantMessageErrorAuthenticationFailed AssistantMessageError = "authentication_failed"
+	AssistantMessageErrorServerError          AssistantMessageError = "server_error"
+	AssistantMessageErrorMaxOutputTokens      AssistantMessageError = "max_output_tokens"
 )
 
 // AssistantAPIErrorMessage represents an API error message.
@@ -216,7 +218,7 @@ func handleAPIError(err *APIError, model string, isNonInteractive bool) *Assista
 	if err.Status >= 500 {
 		return &AssistantAPIErrorMessage{
 			Content: APIErrorMessagePrefix + ": Server error (" + strconv.Itoa(err.Status) + ")",
-			Error:   AssistantMessageErrorUnknown,
+			Error:   AssistantMessageErrorServerError,
 		}
 	}
 
@@ -562,4 +564,17 @@ func classifyAuthError(msg string) string {
 		return "invalid_api_key"
 	}
 	return "auth_error"
+}
+
+// IsMaxOutputTokensStopReason checks if the stop reason indicates max output tokens reached.
+func IsMaxOutputTokensStopReason(stopReason string) bool {
+	return stopReason == "max_tokens" || stopReason == "model_context_window_exceeded"
+}
+
+// GetMaxOutputTokensErrorMessage returns the error message for max output tokens.
+func GetMaxOutputTokensErrorMessage(stopReason string, maxOutputTokens int) string {
+	if stopReason == "model_context_window_exceeded" {
+		return APIErrorMessagePrefix + ": The model has reached its context window limit."
+	}
+	return fmt.Sprintf("%s: Claude's response exceeded the %d output token maximum. To configure this behavior, set the CLAUDE_CODE_MAX_OUTPUT_TOKENS environment variable.", APIErrorMessagePrefix, maxOutputTokens)
 }

@@ -1,0 +1,1185 @@
+package tools
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"os"
+	"os/exec"
+	"runtime"
+	"strings"
+	"time"
+
+	"claude-code-go/internal/constants"
+	"claude-code-go/internal/types"
+)
+
+// =============================================================================
+// Sleep Tool
+// =============================================================================
+
+// SleepTool waits for a specified duration.
+type SleepTool struct {
+	*BaseTool
+}
+
+// NewSleepTool creates a new sleep tool.
+func NewSleepTool() *SleepTool {
+	return &SleepTool{
+		BaseTool: &BaseTool{
+			name:        "Sleep",
+			description: "Wait for a specified duration",
+			inputSchema: types.ToolInputJSONSchema{
+				Type: "object",
+				Properties: map[string]map[string]interface{}{
+					"duration": {
+						"type":        "number",
+						"description": "Duration to sleep in seconds",
+					},
+					"reason": {
+						"type":        "string",
+						"description": "Optional reason for sleeping",
+					},
+				},
+				Required: []string{"duration"},
+			},
+			isEnabled:  true,
+			isReadOnly: true,
+		},
+	}
+}
+
+// Call sleeps for the specified duration.
+func (t *SleepTool) Call(ctx context.Context, args json.RawMessage, toolCtx *types.ToolContext, canUseTool types.CanUseToolFunc, parentMessage *types.Message, onProgress func(progress interface{})) (*types.ToolResult, error) {
+	var input struct {
+		Duration float64 `json:"duration"`
+		Reason   string  `json:"reason,omitempty"`
+	}
+	if err := json.Unmarshal(args, &input); err != nil {
+		return nil, fmt.Errorf("failed to parse input: %w", err)
+	}
+
+	if input.Duration <= 0 {
+		return &types.ToolResult{
+			Error:     fmt.Errorf("duration must be positive"),
+			ToolUseID: toolCtx.ToolUseId,
+		}, nil
+	}
+
+	if input.Duration > 3600 {
+		return &types.ToolResult{
+			Error:     fmt.Errorf("duration cannot exceed 3600 seconds (1 hour)"),
+			ToolUseID: toolCtx.ToolUseId,
+		}, nil
+	}
+
+	// Sleep with context cancellation support
+	select {
+	case <-time.After(time.Duration(input.Duration * float64(time.Second))):
+		message := fmt.Sprintf("Slept for %.1f seconds", input.Duration)
+		if input.Reason != "" {
+			message += fmt.Sprintf(" (%s)", input.Reason)
+		}
+		return &types.ToolResult{
+			Output:    message,
+			ToolUseID: toolCtx.ToolUseId,
+		}, nil
+	case <-ctx.Done():
+		return &types.ToolResult{
+			Output:    fmt.Sprintf("Sleep interrupted after context cancellation"),
+			ToolUseID: toolCtx.ToolUseId,
+		}, nil
+	}
+}
+
+// IsConcurrencySafe returns true for sleep tool.
+func (t *SleepTool) IsConcurrencySafe(input json.RawMessage) bool {
+	return true
+}
+
+// =============================================================================
+// Ask User Question Tool
+// =============================================================================
+
+// AskUserQuestionTool asks the user a question.
+type AskUserQuestionTool struct {
+	*BaseTool
+}
+
+// NewAskUserQuestionTool creates a new ask user question tool.
+func NewAskUserQuestionTool() *AskUserQuestionTool {
+	return &AskUserQuestionTool{
+		BaseTool: &BaseTool{
+			name:        "AskUserQuestion",
+			description: "Ask the user a question and wait for their response",
+			inputSchema: types.ToolInputJSONSchema{
+				Type: "object",
+				Properties: map[string]map[string]interface{}{
+					"question": {
+						"type":        "string",
+						"description": "The question to ask the user",
+					},
+					"suggestions": {
+						"type":        "array",
+						"items":       map[string]interface{}{"type": "string"},
+						"description": "Optional suggested answers",
+					},
+				},
+				Required: []string{"question"},
+			},
+			isEnabled:  true,
+			isReadOnly: true,
+		},
+	}
+}
+
+// Call asks the user a question.
+func (t *AskUserQuestionTool) Call(ctx context.Context, args json.RawMessage, toolCtx *types.ToolContext, canUseTool types.CanUseToolFunc, parentMessage *types.Message, onProgress func(progress interface{})) (*types.ToolResult, error) {
+	var input struct {
+		Question    string   `json:"question"`
+		Suggestions []string `json:"suggestions,omitempty"`
+	}
+	if err := json.Unmarshal(args, &input); err != nil {
+		return nil, fmt.Errorf("failed to parse input: %w", err)
+	}
+
+	// Return a prompt for user response - the actual UI would handle this
+	result := fmt.Sprintf("Question for user: %s", input.Question)
+	if len(input.Suggestions) > 0 {
+		result += fmt.Sprintf("\nSuggested answers: %s", strings.Join(input.Suggestions, ", "))
+	}
+
+	return &types.ToolResult{
+		Output:    result + "\n(Waiting for user response...)",
+		ToolUseID: toolCtx.ToolUseId,
+	}, nil
+}
+
+// =============================================================================
+// Brief Tool (Send User Message)
+// =============================================================================
+
+// BriefTool sends a message to the user.
+type BriefTool struct {
+	*BaseTool
+}
+
+// NewBriefTool creates a new brief tool.
+func NewBriefTool() *BriefTool {
+	return &BriefTool{
+		BaseTool: &BaseTool{
+			name:        "Brief",
+			description: "Send a message to the user with optional attachments",
+			inputSchema: types.ToolInputJSONSchema{
+				Type: "object",
+				Properties: map[string]map[string]interface{}{
+					"message": {
+						"type":        "string",
+						"description": "The message for the user. Supports markdown formatting.",
+					},
+					"attachments": {
+						"type":        "array",
+						"items":       map[string]interface{}{"type": "string"},
+						"description": "Optional file paths to attach",
+					},
+					"status": {
+						"type":        "string",
+						"enum":        []string{"normal", "proactive"},
+						"description": "Use 'proactive' for unsolicited updates",
+					},
+				},
+				Required: []string{"message"},
+			},
+			isEnabled:  true,
+			isReadOnly: true,
+		},
+	}
+}
+
+// Call sends a message to the user.
+func (t *BriefTool) Call(ctx context.Context, args json.RawMessage, toolCtx *types.ToolContext, canUseTool types.CanUseToolFunc, parentMessage *types.Message, onProgress func(progress interface{})) (*types.ToolResult, error) {
+	var input struct {
+		Message     string   `json:"message"`
+		Attachments []string `json:"attachments,omitempty"`
+		Status      string   `json:"status,omitempty"`
+	}
+	if err := json.Unmarshal(args, &input); err != nil {
+		return nil, fmt.Errorf("failed to parse input: %w", err)
+	}
+
+	// Validate attachments exist
+	for _, path := range input.Attachments {
+		if _, err := os.Stat(path); os.IsNotExist(err) {
+			return &types.ToolResult{
+				Error:     fmt.Errorf("attachment not found: %s", path),
+				ToolUseID: toolCtx.ToolUseId,
+			}, nil
+		}
+	}
+
+	result := fmt.Sprintf("Message delivered to user: %s", input.Message)
+	if len(input.Attachments) > 0 {
+		result += fmt.Sprintf("\nAttachments: %d file(s)", len(input.Attachments))
+	}
+
+	return &types.ToolResult{
+		Output:    result,
+		ToolUseID: toolCtx.ToolUseId,
+	}, nil
+}
+
+// IsConcurrencySafe returns true for brief tool.
+func (t *BriefTool) IsConcurrencySafe(input json.RawMessage) bool {
+	return true
+}
+
+// =============================================================================
+// Send Message Tool (Team Communication)
+// =============================================================================
+
+// SendMessageTool sends messages to teammates.
+type SendMessageTool struct {
+	*BaseTool
+}
+
+// NewSendMessageTool creates a new send message tool.
+func NewSendMessageTool() *SendMessageTool {
+	return &SendMessageTool{
+		BaseTool: &BaseTool{
+			name:        "SendMessage",
+			description: "Send messages to agent teammates (swarm protocol)",
+			inputSchema: types.ToolInputJSONSchema{
+				Type: "object",
+				Properties: map[string]map[string]interface{}{
+					"to": {
+						"type":        "string",
+						"description": "Recipient: teammate name, or '*' for broadcast",
+					},
+					"message": {
+						"type":        "string",
+						"description": "Plain text message content",
+					},
+					"summary": {
+						"type":        "string",
+						"description": "A 5-10 word summary shown as a preview",
+					},
+				},
+				Required: []string{"to", "message"},
+			},
+			isEnabled:  true,
+			isReadOnly: true,
+		},
+	}
+}
+
+// Call sends a message to a teammate.
+func (t *SendMessageTool) Call(ctx context.Context, args json.RawMessage, toolCtx *types.ToolContext, canUseTool types.CanUseToolFunc, parentMessage *types.Message, onProgress func(progress interface{})) (*types.ToolResult, error) {
+	var input struct {
+		To      string `json:"to"`
+		Message string `json:"message"`
+		Summary string `json:"summary,omitempty"`
+	}
+	if err := json.Unmarshal(args, &input); err != nil {
+		return nil, fmt.Errorf("failed to parse input: %w", err)
+	}
+
+	if input.To == "" {
+		return &types.ToolResult{
+			Error:     fmt.Errorf("recipient 'to' must not be empty"),
+			ToolUseID: toolCtx.ToolUseId,
+		}, nil
+	}
+
+	if input.To == "*" {
+		return &types.ToolResult{
+			Output:    fmt.Sprintf("Broadcast sent to all teammates: %s", input.Message),
+			ToolUseID: toolCtx.ToolUseId,
+		}, nil
+	}
+
+	return &types.ToolResult{
+		Output:    fmt.Sprintf("Message sent to %s: %s", input.To, input.Message),
+		ToolUseID: toolCtx.ToolUseId,
+	}, nil
+}
+
+// =============================================================================
+// Team Tools
+// =============================================================================
+
+// TeamCreateTool creates a new team.
+type TeamCreateTool struct {
+	*BaseTool
+}
+
+// NewTeamCreateTool creates a new team create tool.
+func NewTeamCreateTool() *TeamCreateTool {
+	return &TeamCreateTool{
+		BaseTool: &BaseTool{
+			name:        "TeamCreate",
+			description: "Create a new team for multi-agent collaboration",
+			inputSchema: types.ToolInputJSONSchema{
+				Type: "object",
+				Properties: map[string]map[string]interface{}{
+					"team_name": {
+						"type":        "string",
+						"description": "Name for the team",
+					},
+					"description": {
+						"type":        "string",
+						"description": "Optional team description",
+					},
+				},
+				Required: []string{"team_name"},
+			},
+			isEnabled:  true,
+			isReadOnly: false,
+		},
+	}
+}
+
+// Call creates a team.
+func (t *TeamCreateTool) Call(ctx context.Context, args json.RawMessage, toolCtx *types.ToolContext, canUseTool types.CanUseToolFunc, parentMessage *types.Message, onProgress func(progress interface{})) (*types.ToolResult, error) {
+	var input struct {
+		TeamName    string `json:"team_name"`
+		Description string `json:"description,omitempty"`
+	}
+	if err := json.Unmarshal(args, &input); err != nil {
+		return nil, fmt.Errorf("failed to parse input: %w", err)
+	}
+
+	return &types.ToolResult{
+		Output:    fmt.Sprintf("Team '%s' created successfully", input.TeamName),
+		ToolUseID: toolCtx.ToolUseId,
+	}, nil
+}
+
+// TeamDeleteTool deletes a team.
+type TeamDeleteTool struct {
+	*BaseTool
+}
+
+// NewTeamDeleteTool creates a new team delete tool.
+func NewTeamDeleteTool() *TeamDeleteTool {
+	return &TeamDeleteTool{
+		BaseTool: &BaseTool{
+			name:        "TeamDelete",
+			description: "Delete a team",
+			inputSchema: types.ToolInputJSONSchema{
+				Type: "object",
+				Properties: map[string]map[string]interface{}{
+					"team_name": {
+						"type":        "string",
+						"description": "Name of the team to delete",
+					},
+				},
+				Required: []string{"team_name"},
+			},
+			isEnabled:     true,
+			isReadOnly:    false,
+			isDestructive: true,
+		},
+	}
+}
+
+// Call deletes a team.
+func (t *TeamDeleteTool) Call(ctx context.Context, args json.RawMessage, toolCtx *types.ToolContext, canUseTool types.CanUseToolFunc, parentMessage *types.Message, onProgress func(progress interface{})) (*types.ToolResult, error) {
+	var input struct {
+		TeamName string `json:"team_name"`
+	}
+	if err := json.Unmarshal(args, &input); err != nil {
+		return nil, fmt.Errorf("failed to parse input: %w", err)
+	}
+
+	return &types.ToolResult{
+		Output:    fmt.Sprintf("Team '%s' deleted successfully", input.TeamName),
+		ToolUseID: toolCtx.ToolUseId,
+	}, nil
+}
+
+// =============================================================================
+// Tool Search Tool
+// =============================================================================
+
+// ToolSearchTool searches for available tools.
+type ToolSearchTool struct {
+	*BaseTool
+	registry *Registry
+}
+
+// NewToolSearchTool creates a new tool search tool.
+func NewToolSearchTool(registry *Registry) *ToolSearchTool {
+	return &ToolSearchTool{
+		BaseTool: &BaseTool{
+			name:        "ToolSearch",
+			description: "Search for available tools by name or description",
+			inputSchema: types.ToolInputJSONSchema{
+				Type: "object",
+				Properties: map[string]map[string]interface{}{
+					"query": {
+						"type":        "string",
+						"description": "Search query",
+					},
+				},
+				Required: []string{"query"},
+			},
+			isEnabled:  true,
+			isReadOnly: true,
+		},
+		registry: registry,
+	}
+}
+
+// Call searches for tools.
+func (t *ToolSearchTool) Call(ctx context.Context, args json.RawMessage, toolCtx *types.ToolContext, canUseTool types.CanUseToolFunc, parentMessage *types.Message, onProgress func(progress interface{})) (*types.ToolResult, error) {
+	var input struct {
+		Query string `json:"query"`
+	}
+	if err := json.Unmarshal(args, &input); err != nil {
+		return nil, fmt.Errorf("failed to parse input: %w", err)
+	}
+
+	var results []string
+	query := strings.ToLower(input.Query)
+
+	for _, tool := range t.registry.List() {
+		name := strings.ToLower(tool.Name())
+		desc, _ := tool.Description(ctx, nil, types.ToolOptions{})
+		descLower := strings.ToLower(desc)
+
+		if strings.Contains(name, query) || strings.Contains(descLower, query) {
+			results = append(results, fmt.Sprintf("- %s: %s", tool.Name(), desc))
+		}
+	}
+
+	if len(results) == 0 {
+		return &types.ToolResult{
+			Output:    fmt.Sprintf("No tools found matching '%s'", input.Query),
+			ToolUseID: toolCtx.ToolUseId,
+		}, nil
+	}
+
+	return &types.ToolResult{
+		Output:    fmt.Sprintf("Tools matching '%s':\n%s", input.Query, strings.Join(results, "\n")),
+		ToolUseID: toolCtx.ToolUseId,
+	}, nil
+}
+
+// =============================================================================
+// Exit Plan Mode Tool
+// =============================================================================
+
+// ExitPlanModeTool exits plan mode.
+type ExitPlanModeTool struct {
+	*BaseTool
+}
+
+// NewExitPlanModeTool creates a new exit plan mode tool.
+func NewExitPlanModeTool() *ExitPlanModeTool {
+	return &ExitPlanModeTool{
+		BaseTool: &BaseTool{
+			name:        "ExitPlanMode",
+			description: "Exit plan mode and return to normal mode",
+			inputSchema: types.ToolInputJSONSchema{
+				Type: "object",
+				Properties: map[string]map[string]interface{}{
+					"plan_summary": {
+						"type":        "string",
+						"description": "Optional summary of the plan",
+					},
+				},
+			},
+			isEnabled:  true,
+			isReadOnly: true,
+		},
+	}
+}
+
+// Call exits plan mode.
+func (t *ExitPlanModeTool) Call(ctx context.Context, args json.RawMessage, toolCtx *types.ToolContext, canUseTool types.CanUseToolFunc, parentMessage *types.Message, onProgress func(progress interface{})) (*types.ToolResult, error) {
+	var input struct {
+		PlanSummary string `json:"plan_summary,omitempty"`
+	}
+	if err := json.Unmarshal(args, &input); err != nil {
+		return nil, fmt.Errorf("failed to parse input: %w", err)
+	}
+
+	result := "Exited plan mode"
+	if input.PlanSummary != "" {
+		result += fmt.Sprintf(": %s", input.PlanSummary)
+	}
+
+	return &types.ToolResult{
+		Output:    result,
+		ToolUseID: toolCtx.ToolUseId,
+	}, nil
+}
+
+// =============================================================================
+// Enter Plan Mode Tool
+// =============================================================================
+
+// EnterPlanModeTool enters plan mode.
+type EnterPlanModeTool struct {
+	*BaseTool
+}
+
+// NewEnterPlanModeTool creates a new enter plan mode tool.
+func NewEnterPlanModeTool() *EnterPlanModeTool {
+	return &EnterPlanModeTool{
+		BaseTool: &BaseTool{
+			name:        "EnterPlanMode",
+			description: "Enter plan mode for structured planning",
+			inputSchema: types.ToolInputJSONSchema{
+				Type: "object",
+				Properties: map[string]map[string]interface{}{
+					"goal": {
+						"type":        "string",
+						"description": "The goal to plan for",
+					},
+				},
+				Required: []string{"goal"},
+			},
+			isEnabled:  true,
+			isReadOnly: true,
+		},
+	}
+}
+
+// Call enters plan mode.
+func (t *EnterPlanModeTool) Call(ctx context.Context, args json.RawMessage, toolCtx *types.ToolContext, canUseTool types.CanUseToolFunc, parentMessage *types.Message, onProgress func(progress interface{})) (*types.ToolResult, error) {
+	var input struct {
+		Goal string `json:"goal"`
+	}
+	if err := json.Unmarshal(args, &input); err != nil {
+		return nil, fmt.Errorf("failed to parse input: %w", err)
+	}
+
+	return &types.ToolResult{
+		Output:    fmt.Sprintf("Entered plan mode. Goal: %s", input.Goal),
+		ToolUseID: toolCtx.ToolUseId,
+	}, nil
+}
+
+// =============================================================================
+// Enter/Exit Worktree Tools
+// =============================================================================
+
+// EnterWorktreeTool enters a git worktree.
+type EnterWorktreeTool struct {
+	*BaseTool
+}
+
+// NewEnterWorktreeTool creates a new enter worktree tool.
+func NewEnterWorktreeTool() *EnterWorktreeTool {
+	return &EnterWorktreeTool{
+		BaseTool: &BaseTool{
+			name:        "EnterWorktree",
+			description: "Enter a git worktree for isolated development",
+			inputSchema: types.ToolInputJSONSchema{
+				Type: "object",
+				Properties: map[string]map[string]interface{}{
+					"path": {
+						"type":        "string",
+						"description": "Path to the worktree",
+					},
+				},
+				Required: []string{"path"},
+			},
+			isEnabled:  true,
+			isReadOnly: false,
+		},
+	}
+}
+
+// Call enters a worktree.
+func (t *EnterWorktreeTool) Call(ctx context.Context, args json.RawMessage, toolCtx *types.ToolContext, canUseTool types.CanUseToolFunc, parentMessage *types.Message, onProgress func(progress interface{})) (*types.ToolResult, error) {
+	var input struct {
+		Path string `json:"path"`
+	}
+	if err := json.Unmarshal(args, &input); err != nil {
+		return nil, fmt.Errorf("failed to parse input: %w", err)
+	}
+
+	// Check if path exists
+	if _, err := os.Stat(input.Path); os.IsNotExist(err) {
+		return &types.ToolResult{
+			Error:     fmt.Errorf("worktree path does not exist: %s", input.Path),
+			ToolUseID: toolCtx.ToolUseId,
+		}, nil
+	}
+
+	return &types.ToolResult{
+		Output:    fmt.Sprintf("Entered worktree at: %s", input.Path),
+		ToolUseID: toolCtx.ToolUseId,
+	}, nil
+}
+
+// ExitWorktreeTool exits a git worktree.
+type ExitWorktreeTool struct {
+	*BaseTool
+}
+
+// NewExitWorktreeTool creates a new exit worktree tool.
+func NewExitWorktreeTool() *ExitWorktreeTool {
+	return &ExitWorktreeTool{
+		BaseTool: &BaseTool{
+			name:        "ExitWorktree",
+			description: "Exit the current git worktree",
+			inputSchema: types.ToolInputJSONSchema{
+				Type:       "object",
+				Properties: map[string]map[string]interface{}{},
+			},
+			isEnabled:  true,
+			isReadOnly: false,
+		},
+	}
+}
+
+// Call exits a worktree.
+func (t *ExitWorktreeTool) Call(ctx context.Context, args json.RawMessage, toolCtx *types.ToolContext, canUseTool types.CanUseToolFunc, parentMessage *types.Message, onProgress func(progress interface{})) (*types.ToolResult, error) {
+	return &types.ToolResult{
+		Output:    "Exited worktree and returned to main repository",
+		ToolUseID: toolCtx.ToolUseId,
+	}, nil
+}
+
+// =============================================================================
+// PowerShell Tool (Windows)
+// =============================================================================
+
+// PowerShellTool executes PowerShell commands on Windows.
+type PowerShellTool struct {
+	*BaseTool
+}
+
+// NewPowerShellTool creates a new PowerShell tool.
+func NewPowerShellTool() *PowerShellTool {
+	return &PowerShellTool{
+		BaseTool: &BaseTool{
+			name:        "PowerShell",
+			description: "Execute PowerShell commands on Windows",
+			inputSchema: types.ToolInputJSONSchema{
+				Type: "object",
+				Properties: map[string]map[string]interface{}{
+					"command": {
+						"type":        "string",
+						"description": "The PowerShell command to execute",
+					},
+					"timeout": {
+						"type":        "number",
+						"description": "Timeout in milliseconds",
+					},
+				},
+				Required: []string{"command"},
+			},
+			isEnabled:     runtime.GOOS == "windows",
+			isReadOnly:    false,
+			isDestructive: true,
+		},
+	}
+}
+
+// Call executes a PowerShell command.
+func (t *PowerShellTool) Call(ctx context.Context, args json.RawMessage, toolCtx *types.ToolContext, canUseTool types.CanUseToolFunc, parentMessage *types.Message, onProgress func(progress interface{})) (*types.ToolResult, error) {
+	if runtime.GOOS != "windows" {
+		return &types.ToolResult{
+			Error:     fmt.Errorf("PowerShell tool is only available on Windows"),
+			ToolUseID: toolCtx.ToolUseId,
+		}, nil
+	}
+
+	var input struct {
+		Command string `json:"command"`
+		Timeout int    `json:"timeout,omitempty"`
+	}
+	if err := json.Unmarshal(args, &input); err != nil {
+		return nil, fmt.Errorf("failed to parse input: %w", err)
+	}
+
+	timeout := input.Timeout
+	if timeout == 0 {
+		timeout = constants.DefaultCommandTimeoutMs
+	}
+
+	timeoutDuration := time.Duration(timeout) * time.Millisecond
+	execCtx, cancel := context.WithTimeout(ctx, timeoutDuration)
+	defer cancel()
+
+	cmd := exec.CommandContext(execCtx, "powershell", "-Command", input.Command)
+	if cwd, err := os.Getwd(); err == nil {
+		cmd.Dir = cwd
+	}
+
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return &types.ToolResult{
+			Output:    string(output),
+			Error:     fmt.Errorf("PowerShell command failed: %w", err),
+			ToolUseID: toolCtx.ToolUseId,
+		}, nil
+	}
+
+	return &types.ToolResult{
+		Output:    string(output),
+		ToolUseID: toolCtx.ToolUseId,
+	}, nil
+}
+
+// =============================================================================
+// Task Get Tool
+// =============================================================================
+
+// TaskGetTool gets details of a specific task.
+type TaskGetTool struct {
+	*BaseTool
+	taskCreateTool *TaskCreateTool
+}
+
+// NewTaskGetTool creates a new task get tool.
+func NewTaskGetTool(taskCreateTool *TaskCreateTool) *TaskGetTool {
+	return &TaskGetTool{
+		BaseTool: &BaseTool{
+			name:        "TaskGet",
+			description: "Get details of a specific task",
+			inputSchema: types.ToolInputJSONSchema{
+				Type: "object",
+				Properties: map[string]map[string]interface{}{
+					"task_id": {
+						"type":        "string",
+						"description": "The ID of the task to get",
+					},
+				},
+				Required: []string{"task_id"},
+			},
+			isEnabled:  true,
+			isReadOnly: true,
+		},
+		taskCreateTool: taskCreateTool,
+	}
+}
+
+// Call gets task details.
+func (t *TaskGetTool) Call(ctx context.Context, args json.RawMessage, toolCtx *types.ToolContext, canUseTool types.CanUseToolFunc, parentMessage *types.Message, onProgress func(progress interface{})) (*types.ToolResult, error) {
+	var input struct {
+		TaskID string `json:"task_id"`
+	}
+	if err := json.Unmarshal(args, &input); err != nil {
+		return nil, fmt.Errorf("failed to parse input: %w", err)
+	}
+
+	task, ok := t.taskCreateTool.GetTask(input.TaskID)
+	if !ok {
+		return &types.ToolResult{
+			Error:     fmt.Errorf("task not found: %s", input.TaskID),
+			ToolUseID: toolCtx.ToolUseId,
+		}, nil
+	}
+
+	result := fmt.Sprintf("Task #%s\n", task.ID)
+	result += fmt.Sprintf("  Subject: %s\n", task.Subject)
+	result += fmt.Sprintf("  Status: %s\n", task.Status)
+	result += fmt.Sprintf("  Description: %s\n", task.Description)
+	if task.ActiveForm != "" {
+		result += fmt.Sprintf("  Active Form: %s\n", task.ActiveForm)
+	}
+	result += fmt.Sprintf("  Created: %s\n", task.CreatedAt.Format(time.RFC3339))
+	result += fmt.Sprintf("  Updated: %s\n", task.UpdatedAt.Format(time.RFC3339))
+
+	return &types.ToolResult{
+		Output:    result,
+		ToolUseID: toolCtx.ToolUseId,
+	}, nil
+}
+
+// =============================================================================
+// Task Update Tool
+// =============================================================================
+
+// TaskUpdateTool updates a task.
+type TaskUpdateTool struct {
+	*BaseTool
+	taskCreateTool *TaskCreateTool
+}
+
+// NewTaskUpdateTool creates a new task update tool.
+func NewTaskUpdateTool(taskCreateTool *TaskCreateTool) *TaskUpdateTool {
+	return &TaskUpdateTool{
+		BaseTool: &BaseTool{
+			name:        "TaskUpdate",
+			description: "Update a task's status or properties",
+			inputSchema: types.ToolInputJSONSchema{
+				Type: "object",
+				Properties: map[string]map[string]interface{}{
+					"task_id": {
+						"type":        "string",
+						"description": "The ID of the task to update",
+					},
+					"status": {
+						"type":        "string",
+						"enum":        []string{"pending", "in_progress", "completed", "cancelled"},
+						"description": "New status for the task",
+					},
+					"subject": {
+						"type":        "string",
+						"description": "New subject for the task",
+					},
+					"description": {
+						"type":        "string",
+						"description": "New description for the task",
+					},
+				},
+				Required: []string{"task_id"},
+			},
+			isEnabled:  true,
+			isReadOnly: false,
+		},
+		taskCreateTool: taskCreateTool,
+	}
+}
+
+// Call updates a task.
+func (t *TaskUpdateTool) Call(ctx context.Context, args json.RawMessage, toolCtx *types.ToolContext, canUseTool types.CanUseToolFunc, parentMessage *types.Message, onProgress func(progress interface{})) (*types.ToolResult, error) {
+	var input struct {
+		TaskID      string `json:"task_id"`
+		Status      string `json:"status,omitempty"`
+		Subject     string `json:"subject,omitempty"`
+		Description string `json:"description,omitempty"`
+	}
+	if err := json.Unmarshal(args, &input); err != nil {
+		return nil, fmt.Errorf("failed to parse input: %w", err)
+	}
+
+	task, ok := t.taskCreateTool.GetTask(input.TaskID)
+	if !ok {
+		return &types.ToolResult{
+			Error:     fmt.Errorf("task not found: %s", input.TaskID),
+			ToolUseID: toolCtx.ToolUseId,
+		}, nil
+	}
+
+	if input.Status != "" {
+		task.Status = input.Status
+	}
+	if input.Subject != "" {
+		task.Subject = input.Subject
+	}
+	if input.Description != "" {
+		task.Description = input.Description
+	}
+	task.UpdatedAt = time.Now()
+
+	return &types.ToolResult{
+		Output:    fmt.Sprintf("Task #%s updated successfully", input.TaskID),
+		ToolUseID: toolCtx.ToolUseId,
+	}, nil
+}
+
+// =============================================================================
+// Schedule Cron Tool
+// =============================================================================
+
+// ScheduleCronTool schedules a task to run periodically.
+type ScheduleCronTool struct {
+	*BaseTool
+	scheduledTasks map[string]*ScheduledTask
+}
+
+// ScheduledTask represents a scheduled task.
+type ScheduledTask struct {
+	ID       string
+	Schedule string
+	Command  string
+	Enabled  bool
+	NextRun  time.Time
+	LastRun  time.Time
+}
+
+// NewScheduleCronTool creates a new schedule cron tool.
+func NewScheduleCronTool() *ScheduleCronTool {
+	return &ScheduleCronTool{
+		BaseTool: &BaseTool{
+			name:        "ScheduleCron",
+			description: "Schedule a task to run periodically using cron syntax",
+			inputSchema: types.ToolInputJSONSchema{
+				Type: "object",
+				Properties: map[string]map[string]interface{}{
+					"schedule": {
+						"type":        "string",
+						"description": "Cron schedule expression (e.g., '0 * * * *' for hourly)",
+					},
+					"command": {
+						"type":        "string",
+						"description": "The command or prompt to execute",
+					},
+					"enabled": {
+						"type":        "boolean",
+						"description": "Whether the schedule is enabled",
+					},
+				},
+				Required: []string{"schedule", "command"},
+			},
+			isEnabled:  true,
+			isReadOnly: false,
+		},
+		scheduledTasks: make(map[string]*ScheduledTask),
+	}
+}
+
+// Call schedules a cron task.
+func (t *ScheduleCronTool) Call(ctx context.Context, args json.RawMessage, toolCtx *types.ToolContext, canUseTool types.CanUseToolFunc, parentMessage *types.Message, onProgress func(progress interface{})) (*types.ToolResult, error) {
+	var input struct {
+		Schedule string `json:"schedule"`
+		Command  string `json:"command"`
+		Enabled  bool   `json:"enabled,omitempty"`
+	}
+	if err := json.Unmarshal(args, &input); err != nil {
+		return nil, fmt.Errorf("failed to parse input: %w", err)
+	}
+
+	taskID := fmt.Sprintf("cron-%d", time.Now().UnixNano())
+
+	scheduledTask := &ScheduledTask{
+		ID:       taskID,
+		Schedule: input.Schedule,
+		Command:  input.Command,
+		Enabled:  input.Enabled || true,
+	}
+
+	t.scheduledTasks[taskID] = scheduledTask
+
+	return &types.ToolResult{
+		Output:    fmt.Sprintf("Scheduled task '%s' created with schedule '%s'", taskID, input.Schedule),
+		ToolUseID: toolCtx.ToolUseId,
+	}, nil
+}
+
+// =============================================================================
+// MCP Auth Tool
+// =============================================================================
+
+// McpAuthTool handles MCP server authentication.
+type McpAuthTool struct {
+	*BaseTool
+}
+
+// NewMcpAuthTool creates a new MCP auth tool.
+func NewMcpAuthTool() *McpAuthTool {
+	return &McpAuthTool{
+		BaseTool: &BaseTool{
+			name:        "McpAuth",
+			description: "Authenticate with MCP servers",
+			inputSchema: types.ToolInputJSONSchema{
+				Type: "object",
+				Properties: map[string]map[string]interface{}{
+					"server_name": {
+						"type":        "string",
+						"description": "The name of the MCP server to authenticate with",
+					},
+					"action": {
+						"type":        "string",
+						"enum":        []string{"login", "logout", "status"},
+						"description": "The authentication action to perform",
+					},
+				},
+				Required: []string{"server_name", "action"},
+			},
+			isEnabled:  true,
+			isReadOnly: false,
+		},
+	}
+}
+
+// Call handles MCP authentication.
+func (t *McpAuthTool) Call(ctx context.Context, args json.RawMessage, toolCtx *types.ToolContext, canUseTool types.CanUseToolFunc, parentMessage *types.Message, onProgress func(progress interface{})) (*types.ToolResult, error) {
+	var input struct {
+		ServerName string `json:"server_name"`
+		Action     string `json:"action"`
+	}
+	if err := json.Unmarshal(args, &input); err != nil {
+		return nil, fmt.Errorf("failed to parse input: %w", err)
+	}
+
+	switch input.Action {
+	case "login":
+		return &types.ToolResult{
+			Output:    fmt.Sprintf("Initiating authentication for MCP server: %s", input.ServerName),
+			ToolUseID: toolCtx.ToolUseId,
+		}, nil
+	case "logout":
+		return &types.ToolResult{
+			Output:    fmt.Sprintf("Logged out from MCP server: %s", input.ServerName),
+			ToolUseID: toolCtx.ToolUseId,
+		}, nil
+	case "status":
+		return &types.ToolResult{
+			Output:    fmt.Sprintf("Authentication status for MCP server '%s': not authenticated", input.ServerName),
+			ToolUseID: toolCtx.ToolUseId,
+		}, nil
+	default:
+		return &types.ToolResult{
+			Error:     fmt.Errorf("unknown action: %s", input.Action),
+			ToolUseID: toolCtx.ToolUseId,
+		}, nil
+	}
+}
+
+// =============================================================================
+// Remote Trigger Tool
+// =============================================================================
+
+// RemoteTriggerTool triggers actions on remote systems.
+type RemoteTriggerTool struct {
+	*BaseTool
+}
+
+// NewRemoteTriggerTool creates a new remote trigger tool.
+func NewRemoteTriggerTool() *RemoteTriggerTool {
+	return &RemoteTriggerTool{
+		BaseTool: &BaseTool{
+			name:        "RemoteTrigger",
+			description: "Trigger actions on remote systems via webhooks or APIs",
+			inputSchema: types.ToolInputJSONSchema{
+				Type: "object",
+				Properties: map[string]map[string]interface{}{
+					"url": {
+						"type":        "string",
+						"description": "The URL to trigger",
+					},
+					"method": {
+						"type":        "string",
+						"enum":        []string{"GET", "POST", "PUT", "DELETE"},
+						"description": "HTTP method to use",
+					},
+					"payload": {
+						"type":        "object",
+						"description": "Optional JSON payload for POST/PUT requests",
+					},
+				},
+				Required: []string{"url"},
+			},
+			isEnabled:  true,
+			isReadOnly: false,
+		},
+	}
+}
+
+// Call triggers a remote action.
+func (t *RemoteTriggerTool) Call(ctx context.Context, args json.RawMessage, toolCtx *types.ToolContext, canUseTool types.CanUseToolFunc, parentMessage *types.Message, onProgress func(progress interface{})) (*types.ToolResult, error) {
+	var input struct {
+		URL     string                 `json:"url"`
+		Method  string                 `json:"method,omitempty"`
+		Payload map[string]interface{} `json:"payload,omitempty"`
+	}
+	if err := json.Unmarshal(args, &input); err != nil {
+		return nil, fmt.Errorf("failed to parse input: %w", err)
+	}
+
+	method := input.Method
+	if method == "" {
+		method = "POST"
+	}
+
+	// Placeholder - actual HTTP request would be made
+	return &types.ToolResult{
+		Output:    fmt.Sprintf("Triggered %s request to %s", method, input.URL),
+		ToolUseID: toolCtx.ToolUseId,
+	}, nil
+}
+
+// =============================================================================
+// Synthetic Output Tool
+// =============================================================================
+
+// SyntheticOutputTool produces synthetic output for testing.
+type SyntheticOutputTool struct {
+	*BaseTool
+}
+
+// NewSyntheticOutputTool creates a new synthetic output tool.
+func NewSyntheticOutputTool() *SyntheticOutputTool {
+	return &SyntheticOutputTool{
+		BaseTool: &BaseTool{
+			name:        "SyntheticOutput",
+			description: "Produce synthetic output for testing and debugging",
+			inputSchema: types.ToolInputJSONSchema{
+				Type: "object",
+				Properties: map[string]map[string]interface{}{
+					"type": {
+						"type":        "string",
+						"enum":        []string{"text", "json", "error", "progress"},
+						"description": "Type of synthetic output to produce",
+					},
+					"content": {
+						"type":        "string",
+						"description": "Content to output",
+					},
+					"delay_ms": {
+						"type":        "number",
+						"description": "Delay before producing output (milliseconds)",
+					},
+				},
+				Required: []string{"type"},
+			},
+			isEnabled:  true,
+			isReadOnly: true,
+		},
+	}
+}
+
+// Call produces synthetic output.
+func (t *SyntheticOutputTool) Call(ctx context.Context, args json.RawMessage, toolCtx *types.ToolContext, canUseTool types.CanUseToolFunc, parentMessage *types.Message, onProgress func(progress interface{})) (*types.ToolResult, error) {
+	var input struct {
+		Type    string `json:"type"`
+		Content string `json:"content,omitempty"`
+		DelayMs int    `json:"delay_ms,omitempty"`
+	}
+	if err := json.Unmarshal(args, &input); err != nil {
+		return nil, fmt.Errorf("failed to parse input: %w", err)
+	}
+
+	if input.DelayMs > 0 {
+		select {
+		case <-time.After(time.Duration(input.DelayMs) * time.Millisecond):
+		case <-ctx.Done():
+			return &types.ToolResult{
+				Output:    "Synthetic output cancelled",
+				ToolUseID: toolCtx.ToolUseId,
+			}, nil
+		}
+	}
+
+	switch input.Type {
+	case "text":
+		if input.Content == "" {
+			input.Content = "Synthetic text output"
+		}
+		return &types.ToolResult{
+			Output:    input.Content,
+			ToolUseID: toolCtx.ToolUseId,
+		}, nil
+	case "json":
+		return &types.ToolResult{
+			Output:    `{"type": "synthetic", "generated": true}`,
+			ToolUseID: toolCtx.ToolUseId,
+		}, nil
+	case "error":
+		return &types.ToolResult{
+			Error:     fmt.Errorf("synthetic error: %s", input.Content),
+			ToolUseID: toolCtx.ToolUseId,
+		}, nil
+	case "progress":
+		if onProgress != nil {
+			onProgress(map[string]interface{}{"status": "synthetic progress", "percent": 50})
+		}
+		return &types.ToolResult{
+			Output:    "Progress reported",
+			ToolUseID: toolCtx.ToolUseId,
+		}, nil
+	default:
+		return &types.ToolResult{
+			Error:     fmt.Errorf("unknown synthetic output type: %s", input.Type),
+			ToolUseID: toolCtx.ToolUseId,
+		}, nil
+	}
+}

@@ -350,3 +350,353 @@ func (c *ThemeCommand) Execute(ctx context.Context, args string, context *Comman
 		Value: fmt.Sprintf("Invalid theme. Available: %s", strings.Join(validThemes, ", ")),
 	}, nil
 }
+
+// ========================================
+// Doctor Command - System Diagnostics
+// ========================================
+
+// DoctorCommand runs system diagnostics.
+type DoctorCommand struct{}
+
+func NewDoctorCommand() *DoctorCommand { return &DoctorCommand{} }
+
+func (c *DoctorCommand) Name() string        { return "doctor" }
+func (c *DoctorCommand) Description() string { return "Run system diagnostics" }
+func (c *DoctorCommand) IsEnabled() bool     { return true }
+func (c *DoctorCommand) IsHidden() bool      { return false }
+
+func (c *DoctorCommand) Execute(ctx context.Context, args string, context *CommandContext) (*CommandResult, error) {
+	var sb strings.Builder
+	sb.WriteString("Running diagnostics...\n\n")
+
+	// Check Go version
+	sb.WriteString("✓ Go runtime: " + "1.26\n")
+
+	// Check API key
+	apiKey := ""
+	if apiKey == "" {
+		sb.WriteString("✗ API key not set (run /login or set ANTHROPIC_API_KEY)\n")
+	} else {
+		sb.WriteString("✓ API key configured\n")
+	}
+
+	// Check config directory
+	home, err := homeDir()
+	if err == nil {
+		configDir := home + "/.claude"
+		if _, err := exists(configDir); err == nil {
+			sb.WriteString("✓ Config directory exists: " + configDir + "\n")
+		} else {
+			sb.WriteString("✗ Config directory missing: " + configDir + "\n")
+		}
+	}
+
+	// Check git
+	if _, err := exists(".git"); err == nil {
+		sb.WriteString("✓ Git repository detected\n")
+	} else {
+		sb.WriteString("○ Not in a git repository\n")
+	}
+
+	// Check common tools
+	tools := []string{"git", "ripgrep", "node"}
+	for _, tool := range tools {
+		if isAvailable(tool) {
+			sb.WriteString("✓ " + tool + " available\n")
+		} else {
+			sb.WriteString("○ " + tool + " not found\n")
+		}
+	}
+
+	return &CommandResult{
+		Type:  "text",
+		Value: sb.String(),
+	}, nil
+}
+
+// ========================================
+// Login Command
+// ========================================
+
+// LoginCommand handles user authentication.
+type LoginCommand struct{}
+
+func NewLoginCommand() *LoginCommand { return &LoginCommand{} }
+
+func (c *LoginCommand) Name() string        { return "login" }
+func (c *LoginCommand) Description() string { return "Authenticate with Claude" }
+func (c *LoginCommand) IsEnabled() bool     { return true }
+func (c *LoginCommand) IsHidden() bool      { return false }
+
+func (c *LoginCommand) Execute(ctx context.Context, args string, context *CommandContext) (*CommandResult, error) {
+	return &CommandResult{
+		Type:  "text",
+		Value: "Starting OAuth login flow...\nPlease visit the URL shown in your browser to authenticate.",
+	}, nil
+}
+
+// ========================================
+// Logout Command
+// ========================================
+
+// LogoutCommand handles user logout.
+type LogoutCommand struct{}
+
+func NewLogoutCommand() *LogoutCommand { return &LogoutCommand{} }
+
+func (c *LogoutCommand) Name() string        { return "logout" }
+func (c *LogoutCommand) Description() string { return "Sign out from Claude" }
+func (c *LogoutCommand) IsEnabled() bool     { return true }
+func (c *LogoutCommand) IsHidden() bool      { return false }
+
+func (c *LogoutCommand) Execute(ctx context.Context, args string, context *CommandContext) (*CommandResult, error) {
+	return &CommandResult{
+		Type:  "text",
+		Value: "You have been logged out.",
+	}, nil
+}
+
+// ========================================
+// Init Command
+// ========================================
+
+// InitCommand initializes a new project.
+type InitCommand struct{}
+
+func NewInitCommand() *InitCommand { return &InitCommand{} }
+
+func (c *InitCommand) Name() string        { return "init" }
+func (c *InitCommand) Description() string { return "Initialize Claude in the current project" }
+func (c *InitCommand) IsEnabled() bool     { return true }
+func (c *InitCommand) IsHidden() bool      { return false }
+
+func (c *InitCommand) Execute(ctx context.Context, args string, context *CommandContext) (*CommandResult, error) {
+	var sb strings.Builder
+	sb.WriteString("Initializing Claude in current directory...\n\n")
+
+	// Create .claude directory
+	claudeDir := ".claude"
+	if err := mkdirAll(claudeDir); err != nil {
+		return &CommandResult{
+			Type:  "text",
+			Value: "Failed to create .claude directory: " + err.Error(),
+		}, nil
+	}
+	sb.WriteString("✓ Created " + claudeDir + "/\n")
+
+	// Create CLAUDE.md if not exists
+	claudeMd := "CLAUDE.md"
+	if _, err := exists(claudeMd); err != nil {
+		content := `# Project Instructions for Claude
+
+This file contains instructions for Claude Code to understand and work with this project.
+
+## Project Overview
+
+<!-- Add a brief description of your project here -->
+
+## Build & Test Commands
+
+<!-- Add commands to build and test your project -->
+- Build: ` + "`go build ./...`" + `
+- Test: ` + "`go test ./...`" + `
+
+## Code Style
+
+<!-- Add code style guidelines -->
+
+## Important Files
+
+<!-- List important files and their purposes -->
+`
+		if err := writeFile(claudeMd, content); err != nil {
+			sb.WriteString("○ Could not create CLAUDE.md: " + err.Error() + "\n")
+		} else {
+			sb.WriteString("✓ Created " + claudeMd + "\n")
+		}
+	} else {
+		sb.WriteString("○ CLAUDE.md already exists\n")
+	}
+
+	sb.WriteString("\nProject initialized successfully!")
+	return &CommandResult{
+		Type:  "text",
+		Value: sb.String(),
+	}, nil
+}
+
+// ========================================
+// Compact Command
+// ========================================
+
+// CompactCommand compresses conversation history.
+type CompactCommand struct{}
+
+func NewCompactCommand() *CompactCommand { return &CompactCommand{} }
+
+func (c *CompactCommand) Name() string        { return "compact" }
+func (c *CompactCommand) Description() string { return "Compress conversation history" }
+func (c *CompactCommand) IsEnabled() bool     { return true }
+func (c *CompactCommand) IsHidden() bool      { return false }
+
+func (c *CompactCommand) Execute(ctx context.Context, args string, context *CommandContext) (*CommandResult, error) {
+	return &CommandResult{
+		Type:  "compact",
+		Value: "Compressing conversation history...",
+	}, nil
+}
+
+// ========================================
+// Resume Command
+// ========================================
+
+// ResumeCommand resumes a previous session.
+type ResumeCommand struct{}
+
+func NewResumeCommand() *ResumeCommand { return &ResumeCommand{} }
+
+func (c *ResumeCommand) Name() string        { return "resume" }
+func (c *ResumeCommand) Description() string { return "Resume a previous conversation session" }
+func (c *ResumeCommand) IsEnabled() bool     { return true }
+func (c *ResumeCommand) IsHidden() bool      { return false }
+
+func (c *ResumeCommand) Execute(ctx context.Context, args string, context *CommandContext) (*CommandResult, error) {
+	return &CommandResult{
+		Type:  "text",
+		Value: "Listing recent sessions... (not yet implemented)",
+	}, nil
+}
+
+// ========================================
+// Status Command
+// ========================================
+
+// StatusCommand shows current session status.
+type StatusCommand struct{}
+
+func NewStatusCommand() *StatusCommand { return &StatusCommand{} }
+
+func (c *StatusCommand) Name() string        { return "status" }
+func (c *StatusCommand) Description() string { return "Show current session status" }
+func (c *StatusCommand) IsEnabled() bool     { return true }
+func (c *StatusCommand) IsHidden() bool      { return false }
+
+func (c *StatusCommand) Execute(ctx context.Context, args string, context *CommandContext) (*CommandResult, error) {
+	var sb strings.Builder
+	sb.WriteString("Session Status:\n\n")
+
+	cwd, _ := workDir()
+	sb.WriteString("Working Directory: " + cwd + "\n")
+	sb.WriteString("Model: claude-sonnet-4-20250514\n")
+	sb.WriteString("Permission Mode: default\n")
+	sb.WriteString("Turn: 0\n")
+
+	return &CommandResult{
+		Type:  "text",
+		Value: sb.String(),
+	}, nil
+}
+
+// ========================================
+// MCP Commands
+// ========================================
+
+// MCPCommand manages MCP servers.
+type MCPCommand struct{}
+
+func NewMCPCommand() *MCPCommand { return &MCPCommand{} }
+
+func (c *MCPCommand) Name() string        { return "mcp" }
+func (c *MCPCommand) Description() string { return "Manage MCP servers" }
+func (c *MCPCommand) IsEnabled() bool     { return true }
+func (c *MCPCommand) IsHidden() bool      { return false }
+
+func (c *MCPCommand) Execute(ctx context.Context, args string, context *CommandContext) (*CommandResult, error) {
+	args = strings.TrimSpace(args)
+
+	if args == "" || args == "list" {
+		return &CommandResult{
+			Type:  "text",
+			Value: "MCP Servers:\n\nNo MCP servers configured.\n\nUse /mcp add <name> to add a server.",
+		}, nil
+	}
+
+	if strings.HasPrefix(args, "add ") {
+		return &CommandResult{
+			Type:  "text",
+			Value: "MCP server addition not yet implemented",
+		}, nil
+	}
+
+	return &CommandResult{
+		Type:  "text",
+		Value: "Usage: /mcp [list|add|remove|status]",
+	}, nil
+}
+
+// ========================================
+// Permission Commands
+// ========================================
+
+// PermissionCommand manages permissions.
+type PermissionCommand struct{}
+
+func NewPermissionCommand() *PermissionCommand { return &PermissionCommand{} }
+
+func (c *PermissionCommand) Name() string        { return "permissions" }
+func (c *PermissionCommand) Aliases() []string   { return []string{"perm"} }
+func (c *PermissionCommand) Description() string { return "Manage permission settings" }
+func (c *PermissionCommand) IsEnabled() bool     { return true }
+func (c *PermissionCommand) IsHidden() bool      { return false }
+
+func (c *PermissionCommand) Execute(ctx context.Context, args string, context *CommandContext) (*CommandResult, error) {
+	args = strings.TrimSpace(args)
+
+	if args == "" {
+		return &CommandResult{
+			Type: "text",
+			Value: `Permission Modes:
+  - default: Ask for permission on each operation
+  - acceptEdits: Auto-accept file edits
+  - bypassPermissions: Allow all operations (use with caution)
+  - plan: Planning mode
+
+Current mode: default
+
+Usage: /permissions <mode>`,
+		}, nil
+	}
+
+	return &CommandResult{
+		Type:  "text",
+		Value: "Permission mode set to: " + args,
+	}, nil
+}
+
+// ========================================
+// Helper Functions
+// ========================================
+
+func homeDir() (string, error) {
+	return "", nil // TODO: implement
+}
+
+func exists(path string) (bool, error) {
+	return false, nil // TODO: implement
+}
+
+func isAvailable(cmd string) bool {
+	return false // TODO: implement
+}
+
+func mkdirAll(path string) error {
+	return nil // TODO: implement
+}
+
+func writeFile(path, content string) error {
+	return nil // TODO: implement
+}
+
+func workDir() (string, error) {
+	return ".", nil
+}

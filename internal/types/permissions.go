@@ -180,7 +180,7 @@ type PermissionDecisionReason struct {
 
 	// For type "classifier"
 	Classifier  string `json:"classifier,omitempty"`
-	ClassReason string `json:"reason,omitempty"` // for type classifier
+	ClassReason string `json:"classReason,omitempty"` // for type classifier
 
 	// For type "safetyCheck"
 	SafetyCheckReason    string `json:"safetyCheckReason,omitempty"`

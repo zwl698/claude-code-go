@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"runtime"
 	"strings"
 )
@@ -46,52 +45,7 @@ func EnsureDir(path string) error {
 // Git Utilities
 // ========================================
 
-// IsGitRepo checks if the current directory is a git repository.
-func IsGitRepo(path string) bool {
-	gitDir := filepath.Join(path, ".git")
-	return FileExists(gitDir)
-}
-
-// FindGitRoot finds the root of the git repository.
-func FindGitRoot(path string) (string, error) {
-	absPath, err := filepath.Abs(path)
-	if err != nil {
-		return "", err
-	}
-
-	for {
-		if IsGitRepo(absPath) {
-			return absPath, nil
-		}
-		parent := filepath.Dir(absPath)
-		if parent == absPath {
-			return "", fmt.Errorf("not a git repository")
-		}
-		absPath = parent
-	}
-}
-
-// GetCurrentBranch returns the current git branch.
-func GetCurrentBranch(repoPath string) (string, error) {
-	cmd := exec.Command("git", "rev-parse", "--abbrev-ref", "HEAD")
-	cmd.Dir = repoPath
-	output, err := cmd.Output()
-	if err != nil {
-		return "", err
-	}
-	return strings.TrimSpace(string(output)), nil
-}
-
-// GetGitRemote returns the git remote URL.
-func GetGitRemote(repoPath string, remote string) (string, error) {
-	cmd := exec.Command("git", "remote", "get-url", remote)
-	cmd.Dir = repoPath
-	output, err := cmd.Output()
-	if err != nil {
-		return "", err
-	}
-	return strings.TrimSpace(string(output)), nil
-}
+// Git utilities are defined in git_utils.go
 
 // ========================================
 // Process Utilities

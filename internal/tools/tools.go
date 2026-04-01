@@ -4,14 +4,54 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 
+	"claude-code-go/internal/constants"
 	"claude-code-go/internal/types"
 )
+
+// =============================================================================
+// Helper Functions
+// =============================================================================
+
+// convertSchema converts a map[string]interface{} to ToolInputJSONSchema
+func convertSchema(schema map[string]interface{}) types.ToolInputJSONSchema {
+	result := types.ToolInputJSONSchema{}
+	if t, ok := schema["type"].(string); ok {
+		result.Type = t
+	}
+	if props, ok := schema["properties"].(map[string]interface{}); ok {
+		result.Properties = make(map[string]map[string]interface{})
+		for k, v := range props {
+			if m, ok := v.(map[string]interface{}); ok {
+				result.Properties[k] = m
+			}
+		}
+	}
+	if req, ok := schema["required"].([]string); ok {
+		result.Required = req
+	} else if req, ok := schema["required"].([]interface{}); ok {
+		result.Required = make([]string, 0, len(req))
+		for _, r := range req {
+			if s, ok := r.(string); ok {
+				result.Required = append(result.Required, s)
+			}
+		}
+	}
+	return result
+}
+
+// =============================================================================
+// Base Tool
+// =============================================================================
 
 // BaseTool provides common functionality for all tools.
 type BaseTool struct {
@@ -68,36 +108,25 @@ func (t *BaseTool) RenderToolUseMessage(input json.RawMessage, options types.Too
 }
 
 func (t *BaseTool) MaxResultSizeChars() int {
-	return 100000 // Default max result size
+	return constants.MaxResultSizeChars
 }
 
-// ========================================
+// =============================================================================
 // Bash Tool
-// ========================================
+// =============================================================================
 
 // BashTool executes shell commands.
 type BashTool struct {
 	*BaseTool
 }
 
+// NewBashTool creates a new Bash tool.
 func NewBashTool() *BashTool {
 	return &BashTool{
 		BaseTool: &BaseTool{
-			name:        "Bash",
-			description: "Execute shell commands",
-			inputSchema: types.ToolInputJSONSchema{
-				Type: "object",
-				Properties: map[string]map[string]interface{}{
-					"command": {
-						"type":        "string",
-						"description": "The command to execute",
-					},
-					"timeout": {
-						"type":        "number",
-						"description": "Timeout in milliseconds",
-					},
-				},
-			},
+			name:          constants.ToolBash,
+			description:   constants.DescBash,
+			inputSchema:   convertSchema(constants.GetBashToolSchema()),
 			isEnabled:     true,
 			isReadOnly:    false,
 			isDestructive: true,
@@ -105,10 +134,12 @@ func NewBashTool() *BashTool {
 	}
 }
 
+// Call executes the bash command.
 func (t *BashTool) Call(ctx context.Context, args json.RawMessage, toolCtx *types.ToolContext, canUseTool types.CanUseToolFunc, parentMessage *types.Message, onProgress func(progress interface{})) (*types.ToolResult, error) {
 	var input struct {
-		Command string `json:"command"`
-		Timeout int    `json:"timeout,omitempty"`
+		Command      string `json:"command"`
+		Timeout      int    `json:"timeout,omitempty"`
+		IsBackground bool   `json:"is_background,omitempty"`
 	}
 	if err := json.Unmarshal(args, &input); err != nil {
 		return nil, fmt.Errorf("failed to parse input: %w", err)
@@ -126,19 +157,46 @@ func (t *BashTool) Call(ctx context.Context, args json.RawMessage, toolCtx *type
 		}, nil
 	}
 
-	// Execute command
-	timeout := time.Duration(input.Timeout) * time.Millisecond
+	// Set timeout
+	timeout := input.Timeout
 	if timeout == 0 {
-		timeout = 30 * time.Second
+		timeout = constants.DefaultCommandTimeoutMs
+	}
+	if timeout > constants.MaxCommandTimeoutMs {
+		timeout = constants.MaxCommandTimeoutMs
 	}
 
-	execCtx, cancel := context.WithTimeout(ctx, timeout)
+	timeoutDuration := time.Duration(timeout) * time.Millisecond
+	execCtx, cancel := context.WithTimeout(ctx, timeoutDuration)
 	defer cancel()
 
-	cmd := exec.CommandContext(execCtx, "sh", "-c", input.Command)
-	// Use current working directory if available
+	// Determine shell based on OS
+	shell := "/bin/sh"
+	shellFlag := "-c"
+	if shellPath := os.Getenv("SHELL"); shellPath != "" {
+		shell = shellPath
+	}
+
+	cmd := exec.CommandContext(execCtx, shell, shellFlag, input.Command)
 	if cwd, err := os.Getwd(); err == nil {
 		cmd.Dir = cwd
+	}
+
+	// Set environment
+	cmd.Env = os.Environ()
+
+	// Handle background execution
+	if input.IsBackground {
+		if err := cmd.Start(); err != nil {
+			return &types.ToolResult{
+				Error:     fmt.Errorf("failed to start command: %w", err),
+				ToolUseID: toolCtx.ToolUseId,
+			}, nil
+		}
+		return &types.ToolResult{
+			Output:    fmt.Sprintf("Command started in background (PID: %d)", cmd.Process.Pid),
+			ToolUseID: toolCtx.ToolUseId,
+		}, nil
 	}
 
 	output, err := cmd.CombinedOutput()
@@ -158,55 +216,57 @@ func (t *BashTool) Call(ctx context.Context, args json.RawMessage, toolCtx *type
 
 func (t *BashTool) IsConcurrencySafe(input json.RawMessage) bool { return false }
 
-// ========================================
+// =============================================================================
 // File Read Tool
-// ========================================
+// =============================================================================
 
 // FileReadTool reads file contents.
 type FileReadTool struct {
 	*BaseTool
 }
 
+// NewFileReadTool creates a new file read tool.
 func NewFileReadTool() *FileReadTool {
 	return &FileReadTool{
 		BaseTool: &BaseTool{
-			name:        "Read",
-			description: "Read file contents",
-			inputSchema: types.ToolInputJSONSchema{
-				Type: "object",
-				Properties: map[string]map[string]interface{}{
-					"file_path": {
-						"type":        "string",
-						"description": "The path to the file to read",
-					},
-					"offset": {
-						"type":        "number",
-						"description": "Line number to start reading from",
-					},
-					"limit": {
-						"type":        "number",
-						"description": "Number of lines to read",
-					},
-				},
-			},
-			isEnabled:  true,
-			isReadOnly: true,
+			name:        constants.ToolFileRead,
+			description: constants.DescRead,
+			inputSchema: convertSchema(constants.GetReadToolSchema()),
+			isEnabled:   true,
+			isReadOnly:  true,
 		},
 	}
 }
 
+// Call reads the file content.
 func (t *FileReadTool) Call(ctx context.Context, args json.RawMessage, toolCtx *types.ToolContext, canUseTool types.CanUseToolFunc, parentMessage *types.Message, onProgress func(progress interface{})) (*types.ToolResult, error) {
 	var input struct {
-		FilePath string `json:"file_path"`
-		Offset   int    `json:"offset,omitempty"`
-		Limit    int    `json:"limit,omitempty"`
+		TargetFile string `json:"target_file"`
+		Offset     int    `json:"offset,omitempty"`
+		Limit      int    `json:"limit,omitempty"`
 	}
 	if err := json.Unmarshal(args, &input); err != nil {
 		return nil, fmt.Errorf("failed to parse input: %w", err)
 	}
 
+	// Check file size
+	info, err := os.Stat(input.TargetFile)
+	if err != nil {
+		return &types.ToolResult{
+			Error:     fmt.Errorf("failed to stat file: %w", err),
+			ToolUseID: toolCtx.ToolUseId,
+		}, nil
+	}
+
+	if info.Size() > constants.MaxFileSizeToRead {
+		return &types.ToolResult{
+			Error:     fmt.Errorf("file too large (max %d bytes)", constants.MaxFileSizeToRead),
+			ToolUseID: toolCtx.ToolUseId,
+		}, nil
+	}
+
 	// Read file
-	content, err := os.ReadFile(input.FilePath)
+	content, err := os.ReadFile(input.TargetFile)
 	if err != nil {
 		return &types.ToolResult{
 			Error:     fmt.Errorf("failed to read file: %w", err),
@@ -223,39 +283,38 @@ func (t *FileReadTool) Call(ctx context.Context, args json.RawMessage, toolCtx *
 		lines = lines[:input.Limit]
 	}
 
+	// Format with line numbers
+	var result strings.Builder
+	for i, line := range lines {
+		lineNum := i + 1
+		if input.Offset > 0 {
+			lineNum += input.Offset
+		}
+		result.WriteString(fmt.Sprintf("%d|%s\n", lineNum, line))
+	}
+
 	return &types.ToolResult{
-		Output:    strings.Join(lines, "\n"),
+		Output:    result.String(),
 		ToolUseID: toolCtx.ToolUseId,
 	}, nil
 }
 
-// ========================================
+// =============================================================================
 // File Write Tool
-// ========================================
+// =============================================================================
 
 // FileWriteTool writes content to files.
 type FileWriteTool struct {
 	*BaseTool
 }
 
+// NewFileWriteTool creates a new file write tool.
 func NewFileWriteTool() *FileWriteTool {
 	return &FileWriteTool{
 		BaseTool: &BaseTool{
-			name:        "Write",
-			description: "Write content to a file",
-			inputSchema: types.ToolInputJSONSchema{
-				Type: "object",
-				Properties: map[string]map[string]interface{}{
-					"file_path": {
-						"type":        "string",
-						"description": "The path to write to",
-					},
-					"content": {
-						"type":        "string",
-						"description": "The content to write",
-					},
-				},
-			},
+			name:          constants.ToolFileWrite,
+			description:   constants.DescWrite,
+			inputSchema:   convertSchema(constants.GetWriteToolSchema()),
 			isEnabled:     true,
 			isReadOnly:    false,
 			isDestructive: true,
@@ -263,17 +322,39 @@ func NewFileWriteTool() *FileWriteTool {
 	}
 }
 
+// Call writes content to the file.
 func (t *FileWriteTool) Call(ctx context.Context, args json.RawMessage, toolCtx *types.ToolContext, canUseTool types.CanUseToolFunc, parentMessage *types.Message, onProgress func(progress interface{})) (*types.ToolResult, error) {
 	var input struct {
 		FilePath string `json:"file_path"`
-		Content  string `json:"content"`
+		Contents string `json:"contents"`
 	}
 	if err := json.Unmarshal(args, &input); err != nil {
 		return nil, fmt.Errorf("failed to parse input: %w", err)
 	}
 
+	// Check permissions
+	permResult, err := t.CheckPermissions(ctx, args, toolCtx)
+	if err != nil {
+		return nil, err
+	}
+	if permResult.Behavior == types.PermissionBehaviorDeny {
+		return &types.ToolResult{
+			Error:     fmt.Errorf("permission denied: %s", permResult.Message),
+			ToolUseID: toolCtx.ToolUseId,
+		}, nil
+	}
+
+	// Create directory if needed
+	dir := filepath.Dir(input.FilePath)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return &types.ToolResult{
+			Error:     fmt.Errorf("failed to create directory: %w", err),
+			ToolUseID: toolCtx.ToolUseId,
+		}, nil
+	}
+
 	// Write file
-	err := os.WriteFile(input.FilePath, []byte(input.Content), 0644)
+	err = os.WriteFile(input.FilePath, []byte(input.Contents), 0644)
 	if err != nil {
 		return &types.ToolResult{
 			Error:     fmt.Errorf("failed to write file: %w", err),
@@ -287,41 +368,22 @@ func (t *FileWriteTool) Call(ctx context.Context, args json.RawMessage, toolCtx 
 	}, nil
 }
 
-// ========================================
+// =============================================================================
 // File Edit Tool
-// ========================================
+// =============================================================================
 
 // FileEditTool edits files with string replacement.
 type FileEditTool struct {
 	*BaseTool
 }
 
+// NewFileEditTool creates a new file edit tool.
 func NewFileEditTool() *FileEditTool {
 	return &FileEditTool{
 		BaseTool: &BaseTool{
-			name:        "Edit",
-			description: "Edit a file with string replacement",
-			inputSchema: types.ToolInputJSONSchema{
-				Type: "object",
-				Properties: map[string]map[string]interface{}{
-					"file_path": {
-						"type":        "string",
-						"description": "The path to the file to edit",
-					},
-					"old_string": {
-						"type":        "string",
-						"description": "The text to replace",
-					},
-					"new_string": {
-						"type":        "string",
-						"description": "The replacement text",
-					},
-					"replace_all": {
-						"type":        "boolean",
-						"description": "Replace all occurrences",
-					},
-				},
-			},
+			name:          constants.ToolFileEdit,
+			description:   constants.DescEdit,
+			inputSchema:   convertSchema(constants.GetEditToolSchema()),
 			isEnabled:     true,
 			isReadOnly:    false,
 			isDestructive: true,
@@ -329,6 +391,7 @@ func NewFileEditTool() *FileEditTool {
 	}
 }
 
+// Call edits the file.
 func (t *FileEditTool) Call(ctx context.Context, args json.RawMessage, toolCtx *types.ToolContext, canUseTool types.CanUseToolFunc, parentMessage *types.Message, onProgress func(progress interface{})) (*types.ToolResult, error) {
 	var input struct {
 		FilePath   string `json:"file_path"`
@@ -340,6 +403,18 @@ func (t *FileEditTool) Call(ctx context.Context, args json.RawMessage, toolCtx *
 		return nil, fmt.Errorf("failed to parse input: %w", err)
 	}
 
+	// Check permissions
+	permResult, err := t.CheckPermissions(ctx, args, toolCtx)
+	if err != nil {
+		return nil, err
+	}
+	if permResult.Behavior == types.PermissionBehaviorDeny {
+		return &types.ToolResult{
+			Error:     fmt.Errorf("permission denied: %s", permResult.Message),
+			ToolUseID: toolCtx.ToolUseId,
+		}, nil
+	}
+
 	// Read file
 	content, err := os.ReadFile(input.FilePath)
 	if err != nil {
@@ -349,9 +424,9 @@ func (t *FileEditTool) Call(ctx context.Context, args json.RawMessage, toolCtx *
 		}, nil
 	}
 
-	// Replace string - check for uniqueness when not replacing all
 	oldContent := string(content)
 	var newContent string
+
 	if input.ReplaceAll {
 		newContent = strings.ReplaceAll(oldContent, input.OldString, input.NewString)
 	} else {
@@ -364,11 +439,10 @@ func (t *FileEditTool) Call(ctx context.Context, args json.RawMessage, toolCtx *
 		}
 		if count > 1 {
 			return &types.ToolResult{
-				Error:     fmt.Errorf("old_string appears %d times; either provide more context to make it unique or use replace_all", count),
+				Error:     fmt.Errorf("old_string appears %d times; provide more context or use replace_all", count),
 				ToolUseID: toolCtx.ToolUseId,
 			}, nil
 		}
-		// Exactly one occurrence - replace it
 		newContent = strings.Replace(oldContent, input.OldString, input.NewString, 1)
 	}
 
@@ -387,54 +461,63 @@ func (t *FileEditTool) Call(ctx context.Context, args json.RawMessage, toolCtx *
 	}, nil
 }
 
-// ========================================
+// =============================================================================
 // Glob Tool
-// ========================================
+// =============================================================================
 
 // GlobTool finds files matching patterns.
 type GlobTool struct {
 	*BaseTool
 }
 
+// NewGlobTool creates a new glob tool.
 func NewGlobTool() *GlobTool {
 	return &GlobTool{
 		BaseTool: &BaseTool{
-			name:        "Glob",
-			description: "Find files matching a pattern",
-			inputSchema: types.ToolInputJSONSchema{
-				Type: "object",
-				Properties: map[string]map[string]interface{}{
-					"pattern": {
-						"type":        "string",
-						"description": "The glob pattern to match",
-					},
-					"path": {
-						"type":        "string",
-						"description": "The directory to search in",
-					},
-				},
-			},
-			isEnabled:  true,
-			isReadOnly: true,
+			name:        constants.ToolGlob,
+			description: constants.DescGlob,
+			inputSchema: convertSchema(constants.GetGlobToolSchema()),
+			isEnabled:   true,
+			isReadOnly:  true,
 		},
 	}
 }
 
+// Call finds matching files.
 func (t *GlobTool) Call(ctx context.Context, args json.RawMessage, toolCtx *types.ToolContext, canUseTool types.CanUseToolFunc, parentMessage *types.Message, onProgress func(progress interface{})) (*types.ToolResult, error) {
 	var input struct {
-		Pattern string `json:"pattern"`
-		Path    string `json:"path,omitempty"`
+		Pattern         string `json:"pattern"`
+		TargetDirectory string `json:"target_directory,omitempty"`
 	}
 	if err := json.Unmarshal(args, &input); err != nil {
 		return nil, fmt.Errorf("failed to parse input: %w", err)
 	}
 
-	if input.Path == "" {
-		input.Path = "."
+	searchDir := input.TargetDirectory
+	if searchDir == "" {
+		searchDir = "."
 	}
 
-	// Use filepath.Glob
-	matches, err := filepath.Glob(filepath.Join(input.Path, input.Pattern))
+	// Prepend **/ if pattern doesn't start with it
+	pattern := input.Pattern
+	if !strings.HasPrefix(pattern, "**/") {
+		pattern = "**/" + pattern
+	}
+
+	// Use filepath.Glob with the pattern
+	var matches []string
+	err := filepath.Walk(searchDir, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return nil
+		}
+		if !info.IsDir() {
+			matched, _ := filepath.Match(pattern, path)
+			if matched {
+				matches = append(matches, path)
+			}
+		}
+		return nil
+	})
 	if err != nil {
 		return &types.ToolResult{
 			Error:     fmt.Errorf("glob failed: %w", err),
@@ -448,63 +531,70 @@ func (t *GlobTool) Call(ctx context.Context, args json.RawMessage, toolCtx *type
 	}, nil
 }
 
-// ========================================
+// =============================================================================
 // Grep Tool
-// ========================================
+// =============================================================================
 
 // GrepTool searches for patterns in files.
 type GrepTool struct {
 	*BaseTool
 }
 
+// NewGrepTool creates a new grep tool.
 func NewGrepTool() *GrepTool {
 	return &GrepTool{
 		BaseTool: &BaseTool{
-			name:        "Grep",
-			description: "Search for patterns in files",
-			inputSchema: types.ToolInputJSONSchema{
-				Type: "object",
-				Properties: map[string]map[string]interface{}{
-					"pattern": {
-						"type":        "string",
-						"description": "The pattern to search for",
-					},
-					"path": {
-						"type":        "string",
-						"description": "The file or directory to search in",
-					},
-					"type": {
-						"type":        "string",
-						"description": "File type to search",
-					},
-				},
-			},
-			isEnabled:  true,
-			isReadOnly: true,
+			name:        constants.ToolGrep,
+			description: constants.DescGrep,
+			inputSchema: convertSchema(constants.GetGrepToolSchema()),
+			isEnabled:   true,
+			isReadOnly:  true,
 		},
 	}
 }
 
+// Call searches for the pattern.
 func (t *GrepTool) Call(ctx context.Context, args json.RawMessage, toolCtx *types.ToolContext, canUseTool types.CanUseToolFunc, parentMessage *types.Message, onProgress func(progress interface{})) (*types.ToolResult, error) {
 	var input struct {
-		Pattern string `json:"pattern"`
-		Path    string `json:"path,omitempty"`
-		Type    string `json:"type,omitempty"`
+		Pattern         string `json:"pattern"`
+		Path            string `json:"path,omitempty"`
+		Glob            string `json:"glob,omitempty"`
+		OutputMode      string `json:"output_mode,omitempty"`
+		CaseInsensitive bool   `json:"case_insensitive,omitempty"`
 	}
 	if err := json.Unmarshal(args, &input); err != nil {
 		return nil, fmt.Errorf("failed to parse input: %w", err)
 	}
 
-	if input.Path == "" {
-		input.Path = "."
+	searchPath := input.Path
+	if searchPath == "" {
+		searchPath = "."
 	}
 
-	// Use ripgrep if available, fallback to grep
-	cmd := exec.CommandContext(ctx, "rg", "--no-heading", "--with-filename", "--line-number", input.Pattern, input.Path)
+	// Build grep command
+	args_ := []string{"--no-heading", "--with-filename", "--line-number"}
+	if input.CaseInsensitive {
+		args_ = append(args_, "-i")
+	}
+	if input.Glob != "" {
+		args_ = append(args_, "--glob", input.Glob)
+	}
+	if input.OutputMode == "files_with_matches" {
+		args_ = append(args_, "-l")
+	}
+	args_ = append(args_, input.Pattern, searchPath)
+
+	// Try ripgrep first, fallback to grep
+	cmd := exec.CommandContext(ctx, "rg", args_...)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		// Fallback to grep
-		cmd = exec.CommandContext(ctx, "grep", "-rn", input.Pattern, input.Path)
+		grepArgs := []string{"-rn"}
+		if input.CaseInsensitive {
+			grepArgs = append(grepArgs, "-i")
+		}
+		grepArgs = append(grepArgs, input.Pattern, searchPath)
+		cmd = exec.CommandContext(ctx, "grep", grepArgs...)
 		output, err = cmd.CombinedOutput()
 		if err != nil {
 			return &types.ToolResult{
@@ -514,19 +604,373 @@ func (t *GrepTool) Call(ctx context.Context, args json.RawMessage, toolCtx *type
 		}
 	}
 
+	// Limit output lines
+	lines := strings.Split(string(output), "\n")
+	if len(lines) > constants.MaxGrepOutputLines {
+		lines = lines[:constants.MaxGrepOutputLines]
+		lines = append(lines, fmt.Sprintf("... (truncated, %d more lines)", len(lines)-constants.MaxGrepOutputLines))
+	}
+
 	return &types.ToolResult{
-		Output:    string(output),
+		Output:    strings.Join(lines, "\n"),
 		ToolUseID: toolCtx.ToolUseId,
 	}, nil
 }
 
-// ========================================
+// =============================================================================
+// Web Fetch Tool
+// =============================================================================
+
+// WebFetchTool fetches content from URLs.
+type WebFetchTool struct {
+	*BaseTool
+}
+
+// NewWebFetchTool creates a new web fetch tool.
+func NewWebFetchTool() *WebFetchTool {
+	return &WebFetchTool{
+		BaseTool: &BaseTool{
+			name:        constants.ToolWebFetch,
+			description: constants.DescWebFetch,
+			inputSchema: convertSchema(constants.GetWebFetchToolSchema()),
+			isEnabled:   true,
+			isReadOnly:  true,
+		},
+	}
+}
+
+// Call fetches content from URLs.
+func (t *WebFetchTool) Call(ctx context.Context, args json.RawMessage, toolCtx *types.ToolContext, canUseTool types.CanUseToolFunc, parentMessage *types.Message, onProgress func(progress interface{})) (*types.ToolResult, error) {
+	var input struct {
+		URLs []string `json:"urls"`
+	}
+	if err := json.Unmarshal(args, &input); err != nil {
+		return nil, fmt.Errorf("failed to parse input: %w", err)
+	}
+
+	var results []string
+	client := &http.Client{Timeout: 30 * time.Second}
+
+	for _, rawURL := range input.URLs {
+		// Ensure HTTPS
+		parsedURL, err := url.Parse(rawURL)
+		if err != nil {
+			results = append(results, fmt.Sprintf("Error: invalid URL %s: %v", rawURL, err))
+			continue
+		}
+
+		if parsedURL.Scheme == "http" {
+			parsedURL.Scheme = "https"
+		}
+
+		req, err := http.NewRequestWithContext(ctx, "GET", parsedURL.String(), nil)
+		if err != nil {
+			results = append(results, fmt.Sprintf("Error: failed to create request for %s: %v", rawURL, err))
+			continue
+		}
+
+		req.Header.Set("User-Agent", "claude-code-go/1.0")
+		resp, err := client.Do(req)
+		if err != nil {
+			results = append(results, fmt.Sprintf("Error: failed to fetch %s: %v", rawURL, err))
+			continue
+		}
+		defer resp.Body.Close()
+
+		body, err := io.ReadAll(resp.Body)
+		if err != nil {
+			results = append(results, fmt.Sprintf("Error: failed to read response from %s: %v", rawURL, err))
+			continue
+		}
+
+		// Convert HTML to markdown-like format
+		content := string(body)
+		if strings.Contains(resp.Header.Get("Content-Type"), "text/html") {
+			content = htmlToMarkdown(content)
+		}
+
+		results = append(results, fmt.Sprintf("=== %s ===\n%s", rawURL, content))
+	}
+
+	return &types.ToolResult{
+		Output:    strings.Join(results, "\n\n"),
+		ToolUseID: toolCtx.ToolUseId,
+	}, nil
+}
+
+// htmlToMarkdown converts basic HTML to markdown-like format
+func htmlToMarkdown(html string) string {
+	// Remove scripts and styles
+	html = regexp.MustCompile(`<script[^>]*>.*?</script>`).ReplaceAllString(html, "")
+	html = regexp.MustCompile(`<style[^>]*>.*?</style>`).ReplaceAllString(html, "")
+
+	// Convert headers
+	html = regexp.MustCompile(`<h1[^>]*>(.*?)</h1>`).ReplaceAllString(html, "# $1\n")
+	html = regexp.MustCompile(`<h2[^>]*>(.*?)</h2>`).ReplaceAllString(html, "## $1\n")
+	html = regexp.MustCompile(`<h3[^>]*>(.*?)</h3>`).ReplaceAllString(html, "### $1\n")
+
+	// Convert links
+	html = regexp.MustCompile(`<a[^>]*href="([^"]*)"[^>]*>(.*?)</a>`).ReplaceAllString(html, "[$2]($1)")
+
+	// Convert paragraphs and divs
+	html = regexp.MustCompile(`</?p[^>]*>`).ReplaceAllString(html, "\n")
+	html = regexp.MustCompile(`</?div[^>]*>`).ReplaceAllString(html, "\n")
+
+	// Remove remaining HTML tags
+	html = regexp.MustCompile(`<[^>]+>`).ReplaceAllString(html, "")
+
+	// Clean up whitespace
+	html = regexp.MustCompile(`\n{3,}`).ReplaceAllString(html, "\n\n")
+	html = strings.TrimSpace(html)
+
+	return html
+}
+
+// =============================================================================
+// Todo Write Tool
+// =============================================================================
+
+// TodoItem represents a todo item
+type TodoItem struct {
+	ID      string `json:"id"`
+	Content string `json:"content"`
+	Status  string `json:"status"`
+}
+
+// TodoWriteTool manages a task list.
+type TodoWriteTool struct {
+	*BaseTool
+	todos []TodoItem
+}
+
+// NewTodoWriteTool creates a new todo write tool.
+func NewTodoWriteTool() *TodoWriteTool {
+	return &TodoWriteTool{
+		BaseTool: &BaseTool{
+			name:        constants.ToolTodoWrite,
+			description: constants.DescTodoWrite,
+			inputSchema: convertSchema(constants.GetTodoWriteToolSchema()),
+			isEnabled:   true,
+			isReadOnly:  false,
+		},
+		todos: make([]TodoItem, 0),
+	}
+}
+
+// Call updates the todo list.
+func (t *TodoWriteTool) Call(ctx context.Context, args json.RawMessage, toolCtx *types.ToolContext, canUseTool types.CanUseToolFunc, parentMessage *types.Message, onProgress func(progress interface{})) (*types.ToolResult, error) {
+	var input struct {
+		Todos []TodoItem `json:"todos"`
+		Merge bool       `json:"merge,omitempty"`
+	}
+	if err := json.Unmarshal(args, &input); err != nil {
+		return nil, fmt.Errorf("failed to parse input: %w", err)
+	}
+
+	if input.Merge {
+		// Merge with existing todos
+		existingMap := make(map[string]TodoItem)
+		for _, todo := range t.todos {
+			existingMap[todo.ID] = todo
+		}
+		for _, todo := range input.Todos {
+			existingMap[todo.ID] = todo
+		}
+		t.todos = make([]TodoItem, 0, len(existingMap))
+		for _, todo := range existingMap {
+			t.todos = append(t.todos, todo)
+		}
+	} else {
+		t.todos = input.Todos
+	}
+
+	// Format output
+	var result strings.Builder
+	result.WriteString("Todo list updated:\n")
+	for _, todo := range t.todos {
+		statusIcon := "○"
+		switch todo.Status {
+		case "in_progress":
+			statusIcon = "◐"
+		case "completed":
+			statusIcon = "●"
+		case "cancelled":
+			statusIcon = "✗"
+		}
+		result.WriteString(fmt.Sprintf("  %s [%s] %s\n", statusIcon, todo.ID, todo.Content))
+	}
+
+	return &types.ToolResult{
+		Output:    result.String(),
+		ToolUseID: toolCtx.ToolUseId,
+	}, nil
+}
+
+// GetTodos returns the current todo list
+func (t *TodoWriteTool) GetTodos() []TodoItem {
+	return t.todos
+}
+
+// =============================================================================
+// Task Tool (Agent)
+// =============================================================================
+
+// TaskTool launches sub-agents.
+type TaskTool struct {
+	*BaseTool
+}
+
+// NewTaskTool creates a new task tool.
+func NewTaskTool() *TaskTool {
+	return &TaskTool{
+		BaseTool: &BaseTool{
+			name:        constants.ToolTaskCreate,
+			description: constants.DescTask,
+			inputSchema: convertSchema(constants.GetTaskToolSchema()),
+			isEnabled:   true,
+			isReadOnly:  false,
+		},
+	}
+}
+
+// Call launches a sub-agent task.
+func (t *TaskTool) Call(ctx context.Context, args json.RawMessage, toolCtx *types.ToolContext, canUseTool types.CanUseToolFunc, parentMessage *types.Message, onProgress func(progress interface{})) (*types.ToolResult, error) {
+	var input struct {
+		Description  string `json:"description"`
+		Prompt       string `json:"prompt"`
+		SubagentType string `json:"subagent_type"`
+		Model        int    `json:"model,omitempty"`
+	}
+	if err := json.Unmarshal(args, &input); err != nil {
+		return nil, fmt.Errorf("failed to parse input: %w", err)
+	}
+
+	// For now, return a placeholder - actual agent execution would require more infrastructure
+	return &types.ToolResult{
+		Output:    fmt.Sprintf("Task '%s' queued for execution with %s agent", input.Description, input.SubagentType),
+		ToolUseID: toolCtx.ToolUseId,
+	}, nil
+}
+
+// =============================================================================
+// Multi-Edit Tool
+// =============================================================================
+
+// MultiEditTool performs multiple edits on a single file.
+type MultiEditTool struct {
+	*BaseTool
+}
+
+// MultiEditOperation represents a single edit operation
+type MultiEditOperation struct {
+	OldString  string `json:"old_string"`
+	NewString  string `json:"new_string"`
+	ReplaceAll bool   `json:"replace_all,omitempty"`
+}
+
+// NewMultiEditTool creates a new multi-edit tool.
+func NewMultiEditTool() *MultiEditTool {
+	return &MultiEditTool{
+		BaseTool: &BaseTool{
+			name:        "MultiEdit",
+			description: "Perform multiple edits on a single file in one operation",
+			inputSchema: types.ToolInputJSONSchema{
+				Type: "object",
+				Properties: map[string]map[string]interface{}{
+					"file_path": {
+						"type":        "string",
+						"description": "The path to the file to modify",
+					},
+					"edits": {
+						"type":        "array",
+						"description": "Array of edit operations",
+					},
+				},
+			},
+			isEnabled:     true,
+			isReadOnly:    false,
+			isDestructive: true,
+		},
+	}
+}
+
+// Call performs multiple edits on the file.
+func (t *MultiEditTool) Call(ctx context.Context, args json.RawMessage, toolCtx *types.ToolContext, canUseTool types.CanUseToolFunc, parentMessage *types.Message, onProgress func(progress interface{})) (*types.ToolResult, error) {
+	var input struct {
+		FilePath string               `json:"file_path"`
+		Edits    []MultiEditOperation `json:"edits"`
+	}
+	if err := json.Unmarshal(args, &input); err != nil {
+		return nil, fmt.Errorf("failed to parse input: %w", err)
+	}
+
+	// Read file
+	content, err := os.ReadFile(input.FilePath)
+	if err != nil {
+		return &types.ToolResult{
+			Error:     fmt.Errorf("failed to read file: %w", err),
+			ToolUseID: toolCtx.ToolUseId,
+		}, nil
+	}
+
+	result := string(content)
+	editCount := 0
+
+	// Apply edits sequentially
+	for i, edit := range input.Edits {
+		if edit.NewString == edit.OldString {
+			return &types.ToolResult{
+				Error:     fmt.Errorf("edit %d: old_string and new_string are identical", i+1),
+				ToolUseID: toolCtx.ToolUseId,
+			}, nil
+		}
+
+		if edit.ReplaceAll {
+			result = strings.ReplaceAll(result, edit.OldString, edit.NewString)
+			editCount++
+		} else {
+			count := strings.Count(result, edit.OldString)
+			if count == 0 {
+				return &types.ToolResult{
+					Error:     fmt.Errorf("edit %d: old_string not found", i+1),
+					ToolUseID: toolCtx.ToolUseId,
+				}, nil
+			}
+			if count > 1 {
+				return &types.ToolResult{
+					Error:     fmt.Errorf("edit %d: old_string appears %d times; provide more context or use replace_all", i+1, count),
+					ToolUseID: toolCtx.ToolUseId,
+				}, nil
+			}
+			result = strings.Replace(result, edit.OldString, edit.NewString, 1)
+			editCount++
+		}
+	}
+
+	// Write back
+	err = os.WriteFile(input.FilePath, []byte(result), 0644)
+	if err != nil {
+		return &types.ToolResult{
+			Error:     fmt.Errorf("failed to write file: %w", err),
+			ToolUseID: toolCtx.ToolUseId,
+		}, nil
+	}
+
+	return &types.ToolResult{
+		Output:    fmt.Sprintf("Successfully applied %d edits to %s", editCount, input.FilePath),
+		ToolUseID: toolCtx.ToolUseId,
+	}, nil
+}
+
+// =============================================================================
 // Tool Registry
-// ========================================
+// =============================================================================
 
 // Registry manages all available tools.
 type Registry struct {
-	tools map[string]types.Tool
+	tools          map[string]types.Tool
+	todoTool       *TodoWriteTool
+	taskCreateTool *TaskCreateTool
 }
 
 // NewToolRegistry creates a new tool registry.
@@ -535,13 +979,49 @@ func NewToolRegistry() *Registry {
 		tools: make(map[string]types.Tool),
 	}
 
-	// Register built-in tools
+	// Register core file tools
 	r.Register(NewBashTool())
 	r.Register(NewFileReadTool())
 	r.Register(NewFileWriteTool())
 	r.Register(NewFileEditTool())
 	r.Register(NewGlobTool())
 	r.Register(NewGrepTool())
+
+	// Register web tools
+	r.Register(NewWebFetchTool())
+	r.Register(NewWebSearchTool())
+
+	// Register todo tool
+	todoTool := NewTodoWriteTool()
+	r.todoTool = todoTool
+	r.Register(todoTool)
+
+	// Register task management tools
+	taskCreateTool := NewTaskCreateTool()
+	r.taskCreateTool = taskCreateTool
+	r.Register(taskCreateTool)
+	r.Register(NewTaskListTool(taskCreateTool))
+	r.Register(NewTaskStopTool(taskCreateTool))
+	r.Register(NewTaskTool())
+
+	// Register advanced editing tools
+	r.Register(NewMultiEditTool())
+
+	// Register LSP tool
+	r.Register(NewLSPTool())
+
+	// Register skill tool
+	r.Register(NewSkillTool())
+
+	// Register MCP tools
+	r.Register(NewListMcpResourcesTool())
+	r.Register(NewReadMcpResourceTool())
+
+	// Register notebook tool
+	r.Register(NewNotebookEditTool())
+
+	// Register config tool
+	r.Register(NewConfigTool())
 
 	return r
 }
@@ -583,5 +1063,24 @@ func (r *Registry) ListEnabled() []types.Tool {
 			seen[tool.Name()] = true
 		}
 	}
+	return result
+}
+
+// GetTodoTool returns the todo tool instance
+func (r *Registry) GetTodoTool() *TodoWriteTool {
+	return r.todoTool
+}
+
+// FilterToolsForAgent filters tools available to a sub-agent
+func (r *Registry) FilterToolsForAgent(agentType string) []types.Tool {
+	allowedMap := constants.AsyncAgentAllowedTools
+	result := make([]types.Tool, 0)
+
+	for _, tool := range r.ListEnabled() {
+		if allowedMap[tool.Name()] {
+			result = append(result, tool)
+		}
+	}
+
 	return result
 }

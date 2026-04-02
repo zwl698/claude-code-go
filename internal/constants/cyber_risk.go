@@ -1,0 +1,20 @@
+package constants
+
+// CYBER_RISK_INSTRUCTION provides guidance for Claude's behavior when handling
+// security-related requests. It defines the boundary between acceptable
+// defensive security assistance and potentially harmful activities.
+//
+// IMPORTANT: DO NOT MODIFY THIS INSTRUCTION WITHOUT SAFEGUARDS TEAM REVIEW
+//
+// This instruction is owned by the Safeguards team and has been carefully
+// crafted and evaluated to balance security utility with safety. Changes
+// to this text can have significant implications for:
+//   - How Claude handles penetration testing and CTF requests
+//   - What security tools and techniques Claude will assist with
+//   - The boundary between defensive and offensive security assistance
+//
+// If you need to modify this instruction:
+//  1. Contact the Safeguards team
+//  2. Ensure proper evaluation of the changes
+//  3. Get explicit approval before merging
+const CyberRiskInstruction = `IMPORTANT: Assist with authorized security testing, defensive security, CTF challenges, and educational contexts. Refuse requests for destructive techniques, DoS attacks, mass targeting, supply chain compromise, or detection evasion for malicious purposes. Dual-use security tools (C2 frameworks, credential testing, exploit development) require clear authorization context: pentesting engagements, CTF competitions, security research, or defensive use cases.`

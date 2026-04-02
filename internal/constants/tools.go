@@ -64,6 +64,15 @@ const (
 
 	// Tool search
 	ToolToolSearch = "ToolSearch"
+
+	// Sleep tool
+	ToolSleep = "Sleep"
+
+	// Brief tool
+	ToolBrief = "Brief"
+
+	// Discover skills tool
+	ToolDiscoverSkills = "DiscoverSkills"
 )
 
 // =============================================================================
@@ -72,6 +81,17 @@ const (
 
 // AllAgentDisallowedTools are tools that cannot be used by sub-agents
 var AllAgentDisallowedTools = map[string]bool{
+	ToolTaskOutput:    true,
+	ToolExitPlanMode:  true,
+	ToolEnterPlanMode: true,
+	ToolAgent:         true,
+	ToolAskUser:       true,
+	ToolTaskStop:      true,
+	ToolWorkflow:      true,
+}
+
+// CustomAgentDisallowedTools are tools that cannot be used by custom agents
+var CustomAgentDisallowedTools = map[string]bool{
 	ToolTaskOutput:    true,
 	ToolExitPlanMode:  true,
 	ToolEnterPlanMode: true,
@@ -98,6 +118,18 @@ var AsyncAgentAllowedTools = map[string]bool{
 	ToolToolSearch:      true,
 	ToolEnterWorktree:   true,
 	ToolExitWorktree:    true,
+}
+
+// InProcessTeammateAllowedTools are tools allowed only for in-process teammates
+var InProcessTeammateAllowedTools = map[string]bool{
+	ToolTaskCreate:  true,
+	ToolTaskGet:     true,
+	ToolTaskList:    true,
+	ToolTaskUpdate:  true,
+	ToolSendMessage: true,
+	ToolCronCreate:  true,
+	ToolCronDelete:  true,
+	ToolCronList:    true,
 }
 
 // CoordinatorModeAllowedTools are tools allowed in coordinator mode

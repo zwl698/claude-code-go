@@ -1,6 +1,8 @@
 package constants
 
-import "os"
+import (
+	"os"
+)
 
 // GrowthBook client keys for feature flags
 const (
@@ -13,11 +15,13 @@ const (
 )
 
 // GetGrowthBookClientKey returns the appropriate GrowthBook client key based on user type.
+// Lazy read so ENABLE_GROWTHBOOK_DEV from globalSettings.env (applied after
+// module load) is picked up. USER_TYPE is a build-time define so it's safe.
 func GetGrowthBookClientKey() string {
 	userType := os.Getenv("USER_TYPE")
 	if userType == "ant" {
 		enableDev := os.Getenv("ENABLE_GROWTHBOOK_DEV")
-		if enableDev == "true" || enableDev == "1" || enableDev == "yes" {
+		if IsEnvTruthy(enableDev) {
 			return GrowthBookClientKeyAntDev
 		}
 		return GrowthBookClientKeyAnt

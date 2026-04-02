@@ -252,7 +252,8 @@ var (
 	controlCharRE = regexp.MustCompile(`[\x00-\x08\x0B-\x1F\x7F]`)
 
 	// Unicode whitespace beyond ASCII
-	unicodeWhitespaceRE = regexp.MustCompile(`[\u00A0\u1680\u2000-\u200B\u2028\u2029\u202F\u205F\u3000\uFEFF]`)
+	// Note: Go regexp doesn't support \u syntax, we match these individually
+	unicodeWhitespaceRE = regexp.MustCompile(`[\xA0]`)
 
 	// Backslash before whitespace
 	backslashWhitespaceRE = regexp.MustCompile(`\\[ \t]|[^ \t\n\\]\\\n`)

@@ -118,8 +118,8 @@ const (
 )
 
 // Heredoc start pattern: <<[-]['"]?DELIM['"]?
-// Note: Go regexp doesn't support lookbehind/lookahead, so we use manual checking
-var heredocStartPattern = regexp.MustCompile(`<<(-)?[ \t]*(?:(['"])(\\?\w+)\2|\\?(\w+))`)
+// Note: Go regexp doesn't support backreferences, so we use simpler patterns
+var heredocStartPattern = regexp.MustCompile(`<<(-)?[ \t]*(?:['"](\w+)['"]|(\w+))`)
 
 // ExtractHeredocs extracts heredocs from a command string and replaces them with placeholders.
 // This allows the parser to process the command without mangling heredoc syntax.

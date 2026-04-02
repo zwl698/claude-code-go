@@ -442,7 +442,12 @@ internal/
 │   │   ├── auth_aws.go   # AWS Bedrock 认证
 │   │   ├── auth_vertex.go # Google Vertex 认证
 │   │   ├── auth_azure.go # Azure Foundry 认证
-│   │   └── signer_aws.go # AWS SigV4 签名
+│   │   ├── signer_aws.go # AWS SigV4 签名
+│   │   ├── empty_usage.go # 空使用量定义
+│   │   ├── error_utils.go # 错误工具函数
+│   │   ├── usage.go      # API使用量查询
+│   │   ├── bootstrap.go  # 引导数据获取
+│   │   └── logging.go    # API日志记录
 │   ├── oauth/            # OAuth 认证
 │   │   └── client.go     # OAuth token 管理
 │   ├── mcp/              # MCP 协议实现
@@ -480,7 +485,8 @@ internal/
 │   ├── plugin.go         # 插件类型
 │   ├── command.go        # 命令类型
 │   ├── appstate.go       # 应用状态
-│   └── permissions.go    # 权限类型
+│   ├── permissions.go    # 权限类型
+│   └── tokens.go         # Token计算工具
 ├── tools/                # 工具实现
 │   ├── tools.go          # 工具注册
 │   ├── advanced_tools.go # 高级工具

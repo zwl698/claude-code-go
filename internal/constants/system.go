@@ -2,7 +2,6 @@ package constants
 
 import (
 	"os"
-	"strings"
 )
 
 // System prompt prefix types
@@ -74,10 +73,4 @@ func GetUnameSR() string {
 	return "Unknown OS"
 }
 
-// Helper function
-func getEnvOrDefault(key, defaultValue string) string {
-	if val := os.Getenv(key); val != "" {
-		return strings.TrimSpace(val)
-	}
-	return defaultValue
-}
+// Helper function - uses getEnvOrDefault from oauth.go

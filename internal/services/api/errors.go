@@ -28,14 +28,30 @@ const (
 )
 
 // APIError represents an API error with status code and message.
+// The NestedError field holds nested error structures from deserialized JSON.
 type APIError struct {
-	Status  int               `json:"status"`
-	Message string            `json:"message"`
-	Headers map[string]string `json:"headers,omitempty"`
+	Status      int               `json:"status"`
+	Message     string            `json:"message"`
+	Headers     map[string]string `json:"headers,omitempty"`
+	NestedError *NestedError      `json:"error,omitempty"` // Nested error from API response
+}
+
+// NestedError represents a nested error structure in API responses.
+// Used for deserialized errors from JSONL files (e.g., --resume).
+type NestedError struct {
+	Message string       `json:"message,omitempty"`
+	Error   *NestedError `json:"error,omitempty"`
 }
 
 func (e *APIError) Error() string {
-	return fmt.Sprintf("API Error: %d %s", e.Status, e.Message)
+	if e.Message != "" {
+		return fmt.Sprintf("API Error: %d %s", e.Status, e.Message)
+	}
+	// Fallback for deserialized errors without message
+	if e.NestedError != nil {
+		return fmt.Sprintf("API Error: %d (nested error)", e.Status)
+	}
+	return fmt.Sprintf("API Error: %d", e.Status)
 }
 
 // APIConnectionError represents a connection error.

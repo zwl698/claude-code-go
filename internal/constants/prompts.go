@@ -5,10 +5,6 @@ package constants
 // Translated from TypeScript: src/constants/prompts.ts
 // =============================================================================
 
-// CyberRiskInstruction provides guidance for handling security-related requests.
-// IMPORTANT: DO NOT MODIFY THIS INSTRUCTION WITHOUT SAFEGUARDS TEAM REVIEW
-const CyberRiskInstruction = "IMPORTANT: Assist with authorized security testing, defensive security, CTF challenges, and educational contexts. Refuse requests for destructive techniques, DoS attacks, mass targeting, supply chain compromise, or detection evasion for malicious purposes. Dual-use security tools (C2 frameworks, credential staging, exploit development) require clear authorization context: pentesting engagements, CTF competitions, security research, or defensive use cases."
-
 // Frontier model names and IDs
 const (
 	// Frontiers model name - update when new model launches

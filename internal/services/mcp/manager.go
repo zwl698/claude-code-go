@@ -114,7 +114,7 @@ func (m *ConnectionManager) Connect(ctx context.Context, name string) error {
 	// Get tools from server
 	tools, err := client.ListTools(ctx)
 	if err != nil {
-		client.Close()
+		client.Disconnect()
 		return fmt.Errorf("failed to list tools: %w", err)
 	}
 
@@ -135,6 +135,13 @@ func (m *ConnectionManager) Connect(ctx context.Context, name string) error {
 		tool.Name = mcpToolName
 		m.tools[mcpToolName] = tool
 	}
+	m.connections[name] = &MCPServerConnection{
+		Name:         name,
+		Type:         ServerConnectionConnected,
+		Config:       conn.Config,
+		Capabilities: client.GetCapabilities(),
+		ServerInfo:   client.GetServerInfo(),
+	}
 	m.mu.Unlock()
 
 	return nil
@@ -150,7 +157,7 @@ func (m *ConnectionManager) Disconnect(name string) error {
 		return nil
 	}
 
-	if err := client.Close(); err != nil {
+	if err := client.Disconnect(); err != nil {
 		return err
 	}
 
@@ -162,7 +169,7 @@ func (m *ConnectionManager) Disconnect(name string) error {
 
 	// Remove tools
 	for toolName, tool := range m.tools {
-		if tool.IsMcp && utils.Contains([]string{name}, extractServerFromToolName(toolName)) {
+		if tool.IsMCP && utils.Contains([]string{name}, extractServerFromToolName(toolName)) {
 			delete(m.tools, toolName)
 		}
 	}
@@ -176,7 +183,7 @@ func (m *ConnectionManager) DisconnectAll() {
 	defer m.mu.Unlock()
 
 	for _, client := range m.clients {
-		client.Close()
+		client.Disconnect()
 	}
 	m.clients = make(map[string]*Client)
 	m.tools = make(map[string]SerializedTool)
@@ -261,7 +268,7 @@ func (m *ConnectionManager) RemoveServer(name string) error {
 	defer m.mu.Unlock()
 
 	if client, ok := m.clients[name]; ok {
-		client.Close()
+		client.Disconnect()
 		delete(m.clients, name)
 	}
 
@@ -269,7 +276,7 @@ func (m *ConnectionManager) RemoveServer(name string) error {
 
 	// Remove tools
 	for toolName, tool := range m.tools {
-		if tool.IsMcp && utils.Contains([]string{name}, extractServerFromToolName(toolName)) {
+		if tool.IsMCP && utils.Contains([]string{name}, extractServerFromToolName(toolName)) {
 			delete(m.tools, toolName)
 		}
 	}

@@ -379,37 +379,37 @@ func (e *InvalidHeaderError) Error() string {
 
 // IsStdioConfig checks if config is a stdio MCP server config.
 func IsStdioConfig(config McpServerConfig) bool {
-	return config.Type == "" || config.Type == string(TransportStdio)
+	return config.GetType() == TransportStdio || config.GetType() == ""
 }
 
 // IsSSEConfig checks if config is an SSE MCP server config.
 func IsSSEConfig(config McpServerConfig) bool {
-	return config.Type == string(TransportSSE)
+	return config.GetType() == TransportSSE
 }
 
 // IsHTTPConfig checks if config is an HTTP MCP server config.
 func IsHTTPConfig(config McpServerConfig) bool {
-	return config.Type == string(TransportHTTP)
+	return config.GetType() == TransportHTTP
 }
 
 // IsWebSocketConfig checks if config is a WebSocket MCP server config.
 func IsWebSocketConfig(config McpServerConfig) bool {
-	return config.Type == string(TransportWS)
+	return config.GetType() == TransportWS
 }
 
 // IsSSEIDEConfig checks if config is an SSE IDE MCP server config.
 func IsSSEIDEConfig(config McpServerConfig) bool {
-	return config.Type == string(TransportSSEIDE)
+	return config.GetType() == TransportSSEIDE
 }
 
 // IsSDKConfig checks if config is an SDK MCP server config.
 func IsSDKConfig(config McpServerConfig) bool {
-	return config.Type == string(TransportSDK)
+	return config.GetType() == TransportSDK
 }
 
 // IsClaudeAIProxyConfig checks if config is a Claude.ai proxy MCP server config.
 func IsClaudeAIProxyConfig(config McpServerConfig) bool {
-	return config.Type == "claudeai-proxy"
+	return config.GetType() == "claudeai-proxy"
 }
 
 // GetLoggingSafeMcpBaseUrl extracts the MCP server base URL for analytics logging.
@@ -417,11 +417,12 @@ func IsClaudeAIProxyConfig(config McpServerConfig) bool {
 // Trailing slashes are also removed for normalization.
 // Returns empty string for stdio/sdk servers or if URL parsing fails.
 func GetLoggingSafeMcpBaseUrl(config McpServerConfig) string {
-	if config.URL == "" {
+	urlStr := GetServerURL(config)
+	if urlStr == "" {
 		return ""
 	}
 
-	parsed, err := url.Parse(config.URL)
+	parsed, err := url.Parse(urlStr)
 	if err != nil {
 		return ""
 	}
@@ -438,19 +439,22 @@ func GetLoggingSafeMcpBaseUrl(config McpServerConfig) string {
 // GetServerCommandArray extracts command array from server config (stdio servers only).
 // Returns nil for non-stdio servers.
 func GetServerCommandArray(config McpServerConfig) []string {
-	if config.Type != "" && config.Type != string(TransportStdio) {
+	if config.GetType() != TransportStdio && config.GetType() != "" {
 		return nil
 	}
 
-	cmd := []string{config.Command}
-	cmd = append(cmd, config.Args...)
-	return cmd
+	if stdio, ok := config.(*McpStdioServerConfig); ok {
+		cmd := []string{stdio.Command}
+		cmd = append(cmd, stdio.Args...)
+		return cmd
+	}
+	return nil
 }
 
 // GetServerUrl extracts URL from server config (remote servers only).
 // Returns empty string for stdio/sdk servers.
 func GetServerUrl(config McpServerConfig) string {
-	return config.URL
+	return GetServerURL(config)
 }
 
 // CCR proxy URL path markers

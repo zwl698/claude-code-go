@@ -11,6 +11,11 @@ import (
 // EnterpriseMCPFileName is the filename for enterprise MCP config
 const EnterpriseMCPFileName = "managed-mcp.json"
 
+// McpJsonConfig represents the MCP JSON configuration file structure
+type McpJsonConfig struct {
+	MCPServers map[string]McpServerConfig `json:"mcpServers"`
+}
+
 // GetEnterpriseMcpFilePath returns the path to the managed MCP configuration file.
 func GetEnterpriseMcpFilePath(managedFilePath string) string {
 	return filepath.Join(managedFilePath, EnterpriseMCPFileName)
@@ -96,111 +101,66 @@ type McpErrorMetadata struct {
 	Severity   string      `json:"severity"`
 }
 
+// =============================================================================
+// Config Loading
+// =============================================================================
+
 // McpConfigLoader handles loading MCP configurations
 type McpConfigLoader struct {
-	homeDir     string
-	cwd         string
-	platform    string
-	envProvider func(string) string
+	platform string
 }
 
 // NewMcpConfigLoader creates a new MCP config loader
-func NewMcpConfigLoader(homeDir, cwd, platform string, envProvider func(string) string) *McpConfigLoader {
+func NewMcpConfigLoader() *McpConfigLoader {
 	return &McpConfigLoader{
-		homeDir:     homeDir,
-		cwd:         cwd,
-		platform:    platform,
-		envProvider: envProvider,
+		platform: "unix",
 	}
 }
 
-// GetGlobalClaudeFile returns the path to the global Claude config file
-func (l *McpConfigLoader) GetGlobalClaudeFile() string {
-	return filepath.Join(l.homeDir, ".claude.json")
-}
-
-// GetProjectMcpJsonPath returns the path to .mcp.json in current directory
-func (l *McpConfigLoader) GetProjectMcpJsonPath() string {
-	return filepath.Join(l.cwd, ".mcp.json")
-}
-
-// LoadGlobalConfig loads the global Claude config
-func (l *McpConfigLoader) LoadGlobalConfig() (map[string]interface{}, error) {
-	data, err := os.ReadFile(l.GetGlobalClaudeFile())
-	if err != nil {
-		if os.IsNotExist(err) {
-			return make(map[string]interface{}), nil
-		}
-		return nil, err
-	}
-
-	var config map[string]interface{}
-	if err := json.Unmarshal(data, &config); err != nil {
-		return nil, fmt.Errorf("failed to parse global config: %w", err)
-	}
-
-	return config, nil
-}
-
-// LoadProjectMcpConfig loads the project-level .mcp.json
-func (l *McpConfigLoader) LoadProjectMcpConfig() (map[string]ScopedMcpServerConfig, []ValidationError, error) {
-	return l.LoadMcpConfigFromPath(l.GetProjectMcpJsonPath(), ConfigScopeProject)
-}
-
-// LoadMcpConfigFromPath loads MCP config from a specific path
-func (l *McpConfigLoader) LoadMcpConfigFromPath(path string, scope ConfigScope) (map[string]ScopedMcpServerConfig, []ValidationError, error) {
+// LoadFromFile loads MCP config from a file
+func (l *McpConfigLoader) LoadFromFile(path string, scope ConfigScope) (map[string]ScopedMcpServerConfig, []ValidationError, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return make(map[string]ScopedMcpServerConfig), nil, nil
+			return nil, nil, nil
 		}
 		return nil, nil, err
 	}
 
+	return l.ParseConfig(data, path, scope)
+}
+
+// ParseConfig parses MCP configuration
+func (l *McpConfigLoader) ParseConfig(data []byte, path string, scope ConfigScope) (map[string]ScopedMcpServerConfig, []ValidationError, error) {
 	var rawConfig struct {
-		McpServers map[string]McpServerConfig `json:"mcpServers"`
+		MCPServers map[string]json.RawMessage `json:"mcpServers"`
 	}
 
 	if err := json.Unmarshal(data, &rawConfig); err != nil {
-		return nil, []ValidationError{{
-			File:    path,
-			Path:    "",
-			Message: "MCP config is not a valid JSON",
-			McpErrorMetadata: &McpErrorMetadata{
-				Scope:    scope,
-				Severity: "fatal",
-			},
-		}}, nil
+		return nil, nil, fmt.Errorf("failed to parse MCP config: %w", err)
 	}
 
-	// Expand environment variables and validate
-	errors := make([]ValidationError, 0)
 	servers := make(map[string]ScopedMcpServerConfig)
+	var errors []ValidationError
 
-	for name, config := range rawConfig.McpServers {
-		// Expand env vars
-		expanded := l.expandEnvVars(config)
-
-		// Check for Windows npx usage without cmd wrapper
-		if l.platform == "windows" {
-			if (config.Type == "" || config.Type == string(TransportStdio)) &&
-				(config.Command == "npx" || strings.HasSuffix(config.Command, "\\npx") || strings.HasSuffix(config.Command, "/npx")) {
-				errors = append(errors, ValidationError{
-					File:       path,
-					Path:       "mcpServers." + name,
-					Message:    "Windows requires 'cmd /c' wrapper to execute npx",
-					Suggestion: "Change command to \"cmd\" with args [\"/c\", \"npx\", ...]",
-					McpErrorMetadata: &McpErrorMetadata{
-						Scope:      scope,
-						ServerName: name,
-						Severity:   "warning",
-					},
-				})
-			}
+	for name, rawData := range rawConfig.MCPServers {
+		config, err := ParseServerConfig(rawData)
+		if err != nil {
+			errors = append(errors, ValidationError{
+				File:    path,
+				Path:    "mcpServers." + name,
+				Message: fmt.Sprintf("Failed to parse server config: %v", err),
+				McpErrorMetadata: &McpErrorMetadata{
+					Scope:      scope,
+					ServerName: name,
+					Severity:   "error",
+				},
+			})
+			continue
 		}
 
 		servers[name] = ScopedMcpServerConfig{
-			McpServerConfig: expanded,
+			McpServerConfig: config,
 			Scope:           scope,
 		}
 	}
@@ -208,481 +168,241 @@ func (l *McpConfigLoader) LoadMcpConfigFromPath(path string, scope ConfigScope) 
 	return servers, errors, nil
 }
 
-// expandEnvVars expands environment variables in the config
-func (l *McpConfigLoader) expandEnvVars(config McpServerConfig) McpServerConfig {
-	result := config
-
-	// Expand command
-	result.Command = l.expandString(config.Command)
-
-	// Expand args
-	if config.Args != nil {
-		result.Args = make([]string, len(config.Args))
-		for i, arg := range config.Args {
-			result.Args[i] = l.expandString(arg)
-		}
+// ParseServerConfig parses raw JSON into a specific server config type
+func ParseServerConfig(data json.RawMessage) (McpServerConfig, error) {
+	var typeDetector struct {
+		Type string `json:"type"`
+	}
+	if err := json.Unmarshal(data, &typeDetector); err != nil {
+		return nil, err
 	}
 
-	// Expand env values
-	if config.Env != nil {
-		result.Env = make(map[string]string)
-		for k, v := range config.Env {
-			result.Env[k] = l.expandString(v)
+	transport := Transport(typeDetector.Type)
+
+	switch transport {
+	case TransportStdio, "":
+		var config McpStdioServerConfig
+		if err := json.Unmarshal(data, &config); err != nil {
+			return nil, err
 		}
-	}
+		config.Type = TransportStdio
+		return &config, nil
 
-	// Expand URL
-	result.URL = l.expandString(config.URL)
-
-	// Expand headers
-	if config.Headers != nil {
-		result.Headers = make(map[string]string)
-		for k, v := range config.Headers {
-			result.Headers[k] = l.expandString(v)
+	case TransportSSE:
+		var config McpSSEServerConfig
+		if err := json.Unmarshal(data, &config); err != nil {
+			return nil, err
 		}
-	}
+		return &config, nil
 
-	return result
-}
-
-// expandString expands environment variables in a string.
-// Supports:
-//   - ${VAR} - simple variable reference
-//   - ${VAR:-default} - variable with default value if not set
-//   - $VAR - simple variable reference (without braces)
-func (l *McpConfigLoader) expandString(s string) string {
-	if s == "" {
-		return s
-	}
-
-	result := s
-
-	// Replace ${VAR} and ${VAR:-default} patterns
-	for {
-		start := strings.Index(result, "${")
-		if start == -1 {
-			break
+	case "sse-ide":
+		var config McpSSEIDEServerConfig
+		if err := json.Unmarshal(data, &config); err != nil {
+			return nil, err
 		}
-		end := strings.Index(result[start:], "}")
-		if end == -1 {
-			break
+		return &config, nil
+
+	case TransportHTTP:
+		var config McpHTTPServerConfig
+		if err := json.Unmarshal(data, &config); err != nil {
+			return nil, err
 		}
-		end += start
+		return &config, nil
 
-		varContent := result[start+2 : end]
-		varName := varContent
-		defaultValue := ""
-
-		// Check for :- syntax (default value)
-		if idx := strings.Index(varContent, ":-"); idx != -1 {
-			varName = varContent[:idx]
-			defaultValue = varContent[idx+2:]
+	case TransportWS:
+		var config McpWebSocketServerConfig
+		if err := json.Unmarshal(data, &config); err != nil {
+			return nil, err
 		}
+		return &config, nil
 
-		varValue := ""
-		if l.envProvider != nil {
-			varValue = l.envProvider(varName)
+	case "ws-ide":
+		var config McpWebSocketIDEServerConfig
+		if err := json.Unmarshal(data, &config); err != nil {
+			return nil, err
 		}
-		if varValue == "" {
-			varValue = defaultValue
+		return &config, nil
+
+	case TransportSDK:
+		var config McpSdkServerConfig
+		if err := json.Unmarshal(data, &config); err != nil {
+			return nil, err
 		}
+		return &config, nil
 
-		result = result[:start] + varValue + result[end+1:]
-	}
-
-	// Replace $VAR patterns (simple form without braces)
-	for i := 0; i < len(result); i++ {
-		if result[i] == '$' && i+1 < len(result) && result[i+1] != '{' {
-			j := i + 1
-			for j < len(result) && (result[j] >= 'a' && result[j] <= 'z' || result[j] >= 'A' && result[j] <= 'Z' || result[j] >= '0' && result[j] <= '9' || result[j] == '_') {
-				j++
-			}
-			if j > i+1 {
-				varName := result[i+1 : j]
-				varValue := ""
-				if l.envProvider != nil {
-					varValue = l.envProvider(varName)
-				}
-				result = result[:i] + varValue + result[j:]
-				i = i + len(varValue) - 1
-			}
+	case "claudeai-proxy":
+		var config McpClaudeAIProxyServerConfig
+		if err := json.Unmarshal(data, &config); err != nil {
+			return nil, err
 		}
-	}
+		return &config, nil
 
-	return result
-}
-
-// GetMcpConfigsByScope gets all MCP configurations from a specific scope
-func (l *McpConfigLoader) GetMcpConfigsByScope(scope ConfigScope) (map[string]ScopedMcpServerConfig, []ValidationError, error) {
-	switch scope {
-	case ConfigScopeProject:
-		return l.loadProjectConfigsRecursive()
-	case ConfigScopeUser:
-		return l.loadUserConfigs()
-	case ConfigScopeLocal:
-		return l.loadLocalConfigs()
-	case ConfigScopeEnterprise:
-		return l.loadEnterpriseConfigs()
 	default:
-		return make(map[string]ScopedMcpServerConfig), nil, nil
+		return nil, fmt.Errorf("unknown transport type: %s", transport)
 	}
 }
 
-// loadProjectConfigsRecursive loads project configs from current dir up to root
-func (l *McpConfigLoader) loadProjectConfigsRecursive() (map[string]ScopedMcpServerConfig, []ValidationError, error) {
-	allServers := make(map[string]ScopedMcpServerConfig)
-	allErrors := make([]ValidationError, 0)
-
-	// Build list of directories to check
-	dirs := make([]string, 0)
-	currentDir := l.cwd
-
-	for {
-		dirs = append(dirs, currentDir)
-		parent := filepath.Dir(currentDir)
-		if parent == currentDir {
-			break
+// ExpandEnvVars expands environment variables in a config
+func ExpandEnvVars(config McpServerConfig) McpServerConfig {
+	switch c := config.(type) {
+	case *McpStdioServerConfig:
+		result := *c
+		result.Command = os.ExpandEnv(c.Command)
+		if c.Args != nil {
+			result.Args = make([]string, len(c.Args))
+			for i, arg := range c.Args {
+				result.Args[i] = os.ExpandEnv(arg)
+			}
 		}
-		currentDir = parent
+		if c.Env != nil {
+			result.Env = make(map[string]string)
+			for k, v := range c.Env {
+				result.Env[k] = os.ExpandEnv(v)
+			}
+		}
+		return &result
+
+	case *McpSSEServerConfig:
+		result := *c
+		result.URL = os.ExpandEnv(c.URL)
+		return &result
+
+	case *McpHTTPServerConfig:
+		result := *c
+		result.URL = os.ExpandEnv(c.URL)
+		return &result
+
+	case *McpWebSocketServerConfig:
+		result := *c
+		result.URL = os.ExpandEnv(c.URL)
+		return &result
+
+	default:
+		return config
+	}
+}
+
+// =============================================================================
+// Config Validation
+// =============================================================================
+
+// ValidateConfig validates an MCP server config
+func ValidateConfig(name string, config McpServerConfig) []ValidationError {
+	var errors []ValidationError
+
+	switch c := config.(type) {
+	case *McpStdioServerConfig:
+		if c.Command == "" {
+			errors = append(errors, ValidationError{
+				Path:    "mcpServers." + name + ".command",
+				Message: "command is required for stdio transport",
+			})
+		}
+
+		if strings.HasSuffix(c.Command, "npx") || strings.HasSuffix(c.Command, "\\npx") {
+			// Warning for Windows users
+		}
+
+	case *McpSSEServerConfig:
+		if c.URL == "" {
+			errors = append(errors, ValidationError{
+				Path:    "mcpServers." + name + ".url",
+				Message: "url is required for SSE transport",
+			})
+		}
+
+	case *McpHTTPServerConfig:
+		if c.URL == "" {
+			errors = append(errors, ValidationError{
+				Path:    "mcpServers." + name + ".url",
+				Message: "url is required for HTTP transport",
+			})
+		}
+
+	case *McpWebSocketServerConfig:
+		if c.URL == "" {
+			errors = append(errors, ValidationError{
+				Path:    "mcpServers." + name + ".url",
+				Message: "url is required for WebSocket transport",
+			})
+		}
 	}
 
-	// Process from root downward to CWD (closer files have higher priority)
-	for i := len(dirs) - 1; i >= 0; i-- {
-		dir := dirs[i]
-		mcpJsonPath := filepath.Join(dir, ".mcp.json")
+	return errors
+}
 
-		servers, errors, err := l.LoadMcpConfigFromPath(mcpJsonPath, ConfigScopeProject)
-		if err != nil {
-			continue
-		}
+// =============================================================================
+// Config Helpers
+// =============================================================================
 
-		// Merge servers
-		for name, config := range servers {
+// GetConfigPath returns the default MCP config path
+func GetConfigPath() string {
+	home, _ := os.UserHomeDir()
+	return filepath.Join(home, ".claude", "mcp.json")
+}
+
+// LoadMcpConfig loads MCP config from default locations
+func LoadMcpConfig() (map[string]ScopedMcpServerConfig, error) {
+	loader := NewMcpConfigLoader()
+	allServers := make(map[string]ScopedMcpServerConfig)
+
+	userConfig, _, err := loader.LoadFromFile(GetConfigPath(), ConfigScopeUser)
+	if err != nil {
+		return nil, err
+	}
+	for name, config := range userConfig {
+		allServers[name] = config
+	}
+
+	wd, _ := os.Getwd()
+	projectConfig, _, err := loader.LoadFromFile(filepath.Join(wd, ".mcp.json"), ConfigScopeProject)
+	if err == nil {
+		for name, config := range projectConfig {
 			allServers[name] = config
 		}
-
-		allErrors = append(allErrors, errors...)
 	}
 
-	return allServers, allErrors, nil
+	return allServers, nil
 }
 
-// loadUserConfigs loads user-scoped MCP configs
-func (l *McpConfigLoader) loadUserConfigs() (map[string]ScopedMcpServerConfig, []ValidationError, error) {
-	config, err := l.LoadGlobalConfig()
-	if err != nil {
-		return nil, nil, err
+// GetServerCommand extracts the command from a stdio config
+func GetServerCommand(config McpServerConfig) (string, []string) {
+	if stdio, ok := config.(*McpStdioServerConfig); ok {
+		return stdio.Command, stdio.Args
 	}
-
-	mcpServers, ok := config["mcpServers"].(map[string]interface{})
-	if !ok {
-		return make(map[string]ScopedMcpServerConfig), nil, nil
-	}
-
-	servers := make(map[string]ScopedMcpServerConfig)
-	for name, serverConfig := range mcpServers {
-		configBytes, err := json.Marshal(serverConfig)
-		if err != nil {
-			continue
-		}
-
-		var mcpConfig McpServerConfig
-		if err := json.Unmarshal(configBytes, &mcpConfig); err != nil {
-			continue
-		}
-
-		servers[name] = ScopedMcpServerConfig{
-			McpServerConfig: l.expandEnvVars(mcpConfig),
-			Scope:           ConfigScopeUser,
-		}
-	}
-
-	return servers, nil, nil
+	return "", nil
 }
 
-// loadLocalConfigs loads local-scoped MCP configs
-func (l *McpConfigLoader) loadLocalConfigs() (map[string]ScopedMcpServerConfig, []ValidationError, error) {
-	// Local configs are stored in .claude/settings.json in the project
-	localSettingsPath := filepath.Join(l.cwd, ".claude", "settings.json")
-
-	data, err := os.ReadFile(localSettingsPath)
-	if err != nil {
-		return make(map[string]ScopedMcpServerConfig), nil, nil
+// GetServerURL extracts the URL from a URL-based config
+func GetServerURL(config McpServerConfig) string {
+	switch c := config.(type) {
+	case *McpSSEServerConfig:
+		return c.URL
+	case *McpHTTPServerConfig:
+		return c.URL
+	case *McpWebSocketServerConfig:
+		return c.URL
+	case *McpSSEIDEServerConfig:
+		return c.URL
+	case *McpWebSocketIDEServerConfig:
+		return c.URL
+	default:
+		return ""
 	}
-
-	var config struct {
-		McpServers map[string]McpServerConfig `json:"mcpServers,omitempty"`
-	}
-
-	if err := json.Unmarshal(data, &config); err != nil {
-		return nil, []ValidationError{{
-			File:    localSettingsPath,
-			Path:    "",
-			Message: "Local settings is not a valid JSON",
-			McpErrorMetadata: &McpErrorMetadata{
-				Scope:    ConfigScopeLocal,
-				Severity: "fatal",
-			},
-		}}, nil
-	}
-
-	return AddScopeToServers(config.McpServers, ConfigScopeLocal), nil, nil
 }
 
-// loadEnterpriseConfigs loads enterprise-scoped MCP configs
-func (l *McpConfigLoader) loadEnterpriseConfigs() (map[string]ScopedMcpServerConfig, []ValidationError, error) {
-	// Enterprise configs are in managed path
-	managedPath := filepath.Join(l.homeDir, ".claude", "managed")
-	enterprisePath := GetEnterpriseMcpFilePath(managedPath)
-
-	return l.LoadMcpConfigFromPath(enterprisePath, ConfigScopeEnterprise)
+// IsStdioConfigType checks if config is stdio type
+func IsStdioConfigType(config McpServerConfig) bool {
+	_, ok := config.(*McpStdioServerConfig)
+	return ok
 }
 
-// ValidateServerName validates an MCP server name
-func ValidateServerName(name string) error {
-	if name == "" {
-		return fmt.Errorf("server name cannot be empty")
-	}
-
-	for _, r := range name {
-		if !((r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '_' || r == '-') {
-			return fmt.Errorf("invalid name %q: names can only contain letters, numbers, hyphens, and underscores", name)
-		}
-	}
-
-	return nil
-}
-
-// ReservedServerNames contains reserved server names that cannot be added
-var ReservedServerNames = map[string]bool{
-	"claude-in-chrome": true,
-}
-
-// IsReservedServerName checks if a server name is reserved
-func IsReservedServerName(name string) bool {
-	return ReservedServerNames[name]
-}
-
-// DedupPluginMcpServers filters plugin MCP servers, dropping any whose signature matches
-// a manually-configured server or an earlier-loaded plugin server.
-// Manual wins over plugin; between plugins, first-loaded wins.
-func DedupPluginMcpServers(
-	pluginServers map[string]ScopedMcpServerConfig,
-	manualServers map[string]ScopedMcpServerConfig,
-) (servers map[string]ScopedMcpServerConfig, suppressed []DedupResult) {
-	// Map signature -> server name
-	manualSigs := make(map[string]string)
-	for name, config := range manualServers {
-		sig := GetMcpServerSignature(config.McpServerConfig)
-		if sig != "" {
-			if _, exists := manualSigs[sig]; !exists {
-				manualSigs[sig] = name
-			}
-		}
-	}
-
-	servers = make(map[string]ScopedMcpServerConfig)
-	seenPluginSigs := make(map[string]string)
-
-	for name, config := range pluginServers {
-		sig := GetMcpServerSignature(config.McpServerConfig)
-
-		if sig == "" {
-			servers[name] = config
-			continue
-		}
-
-		if manualDup, exists := manualSigs[sig]; exists {
-			suppressed = append(suppressed, DedupResult{
-				Name:        name,
-				DuplicateOf: manualDup,
-			})
-			continue
-		}
-
-		if pluginDup, exists := seenPluginSigs[sig]; exists {
-			suppressed = append(suppressed, DedupResult{
-				Name:        name,
-				DuplicateOf: pluginDup,
-			})
-			continue
-		}
-
-		seenPluginSigs[sig] = name
-		servers[name] = config
-	}
-
-	return servers, suppressed
-}
-
-// DedupClaudeAiMcpServers filters claude.ai connectors, dropping any whose signature matches
-// an enabled manually-configured server. Manual wins.
-func DedupClaudeAiMcpServers(
-	claudeAiServers map[string]ScopedMcpServerConfig,
-	manualServers map[string]ScopedMcpServerConfig,
-	isDisabled func(string) bool,
-) (servers map[string]ScopedMcpServerConfig, suppressed []DedupResult) {
-	manualSigs := make(map[string]string)
-	for name, config := range manualServers {
-		if isDisabled(name) {
-			continue
-		}
-		sig := GetMcpServerSignature(config.McpServerConfig)
-		if sig != "" {
-			if _, exists := manualSigs[sig]; !exists {
-				manualSigs[sig] = name
-			}
-		}
-	}
-
-	servers = make(map[string]ScopedMcpServerConfig)
-	for name, config := range claudeAiServers {
-		sig := GetMcpServerSignature(config.McpServerConfig)
-
-		if manualDup, exists := manualSigs[sig]; exists {
-			suppressed = append(suppressed, DedupResult{
-				Name:        name,
-				DuplicateOf: manualDup,
-			})
-			continue
-		}
-
-		servers[name] = config
-	}
-
-	return servers, suppressed
-}
-
-// DedupResult represents a deduplication result
-type DedupResult struct {
-	Name        string
-	DuplicateOf string
-}
-
-// FilterMcpServersByPolicy filters MCP servers by policy (allowedMcpServers/deniedMcpServers)
-func FilterMcpServersByPolicy(
-	configs map[string]ScopedMcpServerConfig,
-	settings SettingsJson,
-	isDisabled func(string) bool,
-) (allowed map[string]ScopedMcpServerConfig, blocked []string) {
-	allowed = make(map[string]ScopedMcpServerConfig)
-
-	for name, config := range configs {
-		// SDK servers are exempt from policy filtering
-		if config.Type == string(TransportSDK) {
-			allowed[name] = config
-			continue
-		}
-
-		if !isMcpServerAllowedByPolicy(name, config.McpServerConfig, settings, isDisabled) {
-			blocked = append(blocked, name)
-			continue
-		}
-
-		allowed[name] = config
-	}
-
-	return allowed, blocked
-}
-
-// isMcpServerAllowedByPolicy checks if an MCP server is allowed by enterprise policy
-func isMcpServerAllowedByPolicy(
-	serverName string,
-	config McpServerConfig,
-	settings SettingsJson,
-	isDisabled func(string) bool,
-) bool {
-	// Denylist takes absolute precedence
-	if isMcpServerDenied(serverName, config, settings) {
-		return false
-	}
-
-	// No allowlist restrictions
-	if settings.AllowedMcpServers == nil {
+// IsURLConfigType checks if config is URL-based
+func IsURLConfigType(config McpServerConfig) bool {
+	switch config.(type) {
+	case *McpSSEServerConfig, *McpHTTPServerConfig, *McpWebSocketServerConfig:
 		return true
-	}
-
-	// Empty allowlist means block all servers
-	if len(settings.AllowedMcpServers) == 0 {
+	default:
 		return false
 	}
-
-	// Check command-based allowance for stdio servers
-	serverCommand := GetServerCommandArray(config)
-	if serverCommand != nil {
-		hasCommandEntries := false
-		for _, entry := range settings.AllowedMcpServers {
-			if IsMcpServerCommandEntry(entry) {
-				hasCommandEntries = true
-				if CommandArraysMatch(entry.ServerCommand, serverCommand) {
-					return true
-				}
-			}
-		}
-		if hasCommandEntries {
-			return false
-		}
-	}
-
-	// Check URL-based allowance for remote servers
-	serverUrl := config.URL
-	if serverUrl != "" {
-		hasUrlEntries := false
-		for _, entry := range settings.AllowedMcpServers {
-			if IsMcpServerUrlEntry(entry) {
-				hasUrlEntries = true
-				if UrlMatchesPattern(serverUrl, entry.ServerUrl) {
-					return true
-				}
-			}
-		}
-		if hasUrlEntries {
-			return false
-		}
-	}
-
-	// Check name-based allowance
-	for _, entry := range settings.AllowedMcpServers {
-		if IsMcpServerNameEntry(entry) && entry.ServerName == serverName {
-			return true
-		}
-	}
-
-	return false
-}
-
-// isMcpServerDenied checks if an MCP server is denied by enterprise policy
-func isMcpServerDenied(serverName string, config McpServerConfig, settings SettingsJson) bool {
-	if settings.DeniedMcpServers == nil {
-		return false
-	}
-
-	// Check name-based denial
-	for _, entry := range settings.DeniedMcpServers {
-		if IsMcpServerNameEntry(entry) && entry.ServerName == serverName {
-			return true
-		}
-	}
-
-	// Check command-based denial (stdio servers)
-	serverCommand := GetServerCommandArray(config)
-	if serverCommand != nil {
-		for _, entry := range settings.DeniedMcpServers {
-			if IsMcpServerCommandEntry(entry) && CommandArraysMatch(entry.ServerCommand, serverCommand) {
-				return true
-			}
-		}
-	}
-
-	// Check URL-based denial (remote servers)
-	serverUrl := config.URL
-	if serverUrl != "" {
-		for _, entry := range settings.DeniedMcpServers {
-			if IsMcpServerUrlEntry(entry) && UrlMatchesPattern(serverUrl, entry.ServerUrl) {
-				return true
-			}
-		}
-	}
-
-	return false
 }

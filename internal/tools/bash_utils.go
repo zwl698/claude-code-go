@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+
+	"claude-code-go/internal/utils"
 )
 
 // =============================================================================
@@ -101,28 +103,22 @@ func ExecuteBashCommand(opts BashCommandOptions) (*BashCommandResult, error) {
 
 // ValidateBashCommand validates a bash command for security.
 func ValidateBashCommand(command string) error {
-	// Check for dangerous patterns
-	dangerousPatterns := []struct {
-		pattern string
-		message string
-	}{
-		{"rm -rf /", "attempting to delete root filesystem"},
-		{"rm -rf /*", "attempting to delete root filesystem"},
-		{":(){ :|:& };:", "fork bomb detected"},
-		{"mkfs", "attempting to format filesystem"},
-		{"dd if=/dev/zero", "attempting to overwrite disk"},
-		{"> /dev/sda", "attempting to write directly to disk"},
-		{"chmod -R 777 /", "attempting to change permissions on root"},
-		{"chown -R", "attempting to change ownership recursively"},
-	}
+	// Use the comprehensive security check from utils
+	result := utils.BashCommandIsSafe(command)
 
-	for _, dp := range dangerousPatterns {
-		if strings.Contains(command, dp.pattern) {
-			return fmt.Errorf("dangerous command blocked: %s", dp.message)
-		}
+	// Convert result to error if needed
+	switch result.Behavior {
+	case "allow":
+		return nil
+	case "deny":
+		return fmt.Errorf("command blocked: %s", result.Message)
+	case "ask":
+		// For "ask" behavior, we still block but with a different message
+		return fmt.Errorf("command requires confirmation: %s", result.Message)
+	default:
+		// Unknown behavior, fail closed
+		return fmt.Errorf("command validation failed: %s", result.Message)
 	}
-
-	return nil
 }
 
 // =============================================================================

@@ -4,8 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"time"
 
 	"claude-code-go/internal/constants"
+	"claude-code-go/internal/tasks"
 	"claude-code-go/internal/types"
 )
 
@@ -66,6 +68,12 @@ func (t *MCPTool) IsMCP() bool {
 // AgentTool spawns and manages sub-agents.
 type AgentTool struct {
 	*BaseTool
+	taskManager *tasks.Manager
+}
+
+// SetTaskManager sets the task manager for the agent tool.
+func (t *AgentTool) SetTaskManager(mgr *tasks.Manager) {
+	t.taskManager = mgr
 }
 
 // NewAgentTool creates a new Agent tool.
@@ -120,12 +128,34 @@ func (t *AgentTool) Call(ctx context.Context, args json.RawMessage, toolCtx *typ
 		return nil, fmt.Errorf("failed to parse input: %w", err)
 	}
 
-	// TODO: Implement actual agent spawning logic
-	// This requires the agent framework from:
-	// - tasks/LocalAgentTask
-	// - tasks/RemoteAgentTask
-	// - utils/worktree
+	// Determine agent type
+	agentType := input.SubagentType
+	if agentType == "" {
+		agentType = "general-agent"
+	}
 
+	// If task manager is available, spawn a proper task
+	if t.taskManager != nil {
+		task, err := t.taskManager.SpawnLocalAgent(ctx, input.Prompt, agentType, input.Description, input.RunInBackground)
+		if err != nil {
+			return nil, fmt.Errorf("failed to spawn agent task: %w", err)
+		}
+
+		// If running in background, return immediately with task ID
+		if input.RunInBackground {
+			return &types.ToolResult{
+				Output: fmt.Sprintf("Agent task '%s' started in background.\nTask ID: %s", input.Description, task.ID),
+			}, nil
+		}
+
+		// For foreground tasks, we need to execute synchronously
+		// The actual execution will be handled by the query engine
+		return &types.ToolResult{
+			Output: fmt.Sprintf("Agent task '%s' created.\nTask ID: %s\nPrompt: %s", input.Description, task.ID, input.Prompt),
+		}, nil
+	}
+
+	// Fallback: placeholder response
 	return &types.ToolResult{
 		Output: fmt.Sprintf("Agent task '%s' spawned successfully. Prompt: %s", input.Description, input.Prompt),
 	}, nil
@@ -203,6 +233,12 @@ func (t *REPLTool) Call(ctx context.Context, args json.RawMessage, toolCtx *type
 // TaskOutputTool retrieves output from running or completed tasks.
 type TaskOutputTool struct {
 	*BaseTool
+	taskManager *tasks.Manager
+}
+
+// SetTaskManager sets the task manager for the tool.
+func (t *TaskOutputTool) SetTaskManager(mgr *tasks.Manager) {
+	t.taskManager = mgr
 }
 
 // NewTaskOutputTool creates a new Task Output tool.
@@ -258,25 +294,98 @@ func (t *TaskOutputTool) Call(ctx context.Context, args json.RawMessage, toolCtx
 		input.Timeout = 30000
 	}
 
-	// TODO: Implement actual task output retrieval
-	// This requires integration with:
-	// - tasks/LocalAgentTask
-	// - tasks/LocalShellTask
-	// - tasks/RemoteAgentTask
-	// - utils/task/diskOutput
+	// If task manager is available, use it
+	if t.taskManager != nil {
+		task := t.taskManager.GetTask(input.TaskID)
+		if task == nil {
+			return nil, fmt.Errorf("task %s not found", input.TaskID)
+		}
 
-	// Simulate output retrieval
-	output := fmt.Sprintf("Task %s output placeholder", input.TaskID)
+		base := task.GetBase()
 
-	// TODO: Implement actual task output retrieval
-	// This requires integration with:
-	// - tasks/LocalAgentTask
-	// - tasks/LocalShellTask
-	// - tasks/RemoteAgentTask
-	// - utils/task/diskOutput
+		// If blocking and task is still running, wait for completion
+		if input.Block && (base.Status == tasks.TaskStatusPending || base.Status == tasks.TaskStatusRunning) {
+			timeout := time.Duration(input.Timeout) * time.Millisecond
+			deadline := time.Now().Add(timeout)
 
+			for time.Now().Before(deadline) {
+				task = t.taskManager.GetTask(input.TaskID)
+				if task == nil {
+					return nil, fmt.Errorf("task %s disappeared", input.TaskID)
+				}
+
+				base = task.GetBase()
+				if base.Status != tasks.TaskStatusPending && base.Status != tasks.TaskStatusRunning {
+					break
+				}
+
+				time.Sleep(100 * time.Millisecond)
+			}
+		}
+
+		// Return output based on task type
+		switch tt := task.(type) {
+		case *tasks.LocalAgentTaskState:
+			if tt.Error != "" {
+				return &types.ToolResult{
+					Output: fmt.Sprintf("Task failed: %s", tt.Error),
+					Error:  fmt.Errorf("task failed: %s", tt.Error),
+				}, nil
+			}
+			if tt.Result != nil {
+				return &types.ToolResult{
+					Output: fmt.Sprintf("%v", tt.Result),
+				}, nil
+			}
+			// Try to read from output file
+			output, err := tasks.ReadTaskOutput(input.TaskID)
+			if err != nil {
+				return &types.ToolResult{
+					Output: fmt.Sprintf("Task %s completed (no output available)", input.TaskID),
+				}, nil
+			}
+			return &types.ToolResult{Output: output}, nil
+
+		case *tasks.LocalShellTaskState:
+			if tt.Error != "" {
+				return &types.ToolResult{
+					Output: fmt.Sprintf("Shell task failed: %s", tt.Error),
+					Error:  fmt.Errorf("shell task failed: %s", tt.Error),
+				}, nil
+			}
+			output, err := tasks.ReadTaskOutput(input.TaskID)
+			if err != nil {
+				exitCodeStr := ""
+				if tt.ExitCode != nil {
+					exitCodeStr = fmt.Sprintf(" (exit code: %d)", *tt.ExitCode)
+				}
+				return &types.ToolResult{
+					Output: fmt.Sprintf("Shell task completed%s", exitCodeStr),
+				}, nil
+			}
+			return &types.ToolResult{Output: output}, nil
+
+		case *tasks.RemoteAgentTaskState:
+			if tt.Error != "" {
+				return &types.ToolResult{
+					Output: fmt.Sprintf("Remote agent failed: %s", tt.Error),
+					Error:  fmt.Errorf("remote agent failed: %s", tt.Error),
+				}, nil
+			}
+			return &types.ToolResult{
+				Output: fmt.Sprintf("Remote agent task %s completed", input.TaskID),
+			}, nil
+
+		default:
+			return &types.ToolResult{
+				Output: fmt.Sprintf("Task %s status: %s", input.TaskID, base.Status),
+			}, nil
+		}
+	}
+
+	// Fallback: placeholder response
 	return &types.ToolResult{
-		Output: output,
+		Output: fmt.Sprintf("Task %s output placeholder", input.TaskID),
 	}, nil
 }
 

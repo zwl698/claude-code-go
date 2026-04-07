@@ -3,7 +3,11 @@ package commands
 import (
 	"context"
 	"fmt"
+	"os"
+	"os/exec"
 	"strings"
+
+	"claude-code-go/internal/utils"
 )
 
 // CommandResult represents the result of command execution.
@@ -678,25 +682,26 @@ Usage: /permissions <mode>`,
 // ========================================
 
 func homeDir() (string, error) {
-	return "", nil // TODO: implement
+	return utils.GetHomeDir(), nil
 }
 
 func exists(path string) (bool, error) {
-	return false, nil // TODO: implement
+	return utils.PathExists(path), nil
 }
 
 func isAvailable(cmd string) bool {
-	return false // TODO: implement
+	_, err := exec.LookPath(cmd)
+	return err == nil
 }
 
 func mkdirAll(path string) error {
-	return nil // TODO: implement
+	return os.MkdirAll(path, 0755)
 }
 
 func writeFile(path, content string) error {
-	return nil // TODO: implement
+	return os.WriteFile(path, []byte(content), 0644)
 }
 
 func workDir() (string, error) {
-	return ".", nil
+	return os.Getwd()
 }

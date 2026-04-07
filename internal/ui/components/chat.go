@@ -1,6 +1,7 @@
 package components
 
 import (
+	"fmt"
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -153,6 +154,22 @@ func (m *ChatModel) AddAssistantMessage(content string) {
 		Content: []ContentBlock{{Type: "text", Text: content}},
 	})
 	m.State = ChatStateIdle
+}
+
+// AddSystemMessage adds a system message.
+func (m *ChatModel) AddSystemMessage(content string) {
+	m.Messages.AddMessage(MessageModel{
+		Role:    "system",
+		Content: []ContentBlock{{Type: "text", Text: content}},
+	})
+}
+
+// AddToolResult adds a tool result message.
+func (m *ChatModel) AddToolResult(toolName, content string) {
+	m.Messages.AddMessage(MessageModel{
+		Role:    "tool_result",
+		Content: []ContentBlock{{Type: "tool_result", Text: fmt.Sprintf("%s: %s", toolName, content)}},
+	})
 }
 
 // SetError sets an error state.

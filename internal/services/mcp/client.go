@@ -345,8 +345,25 @@ func (c *Client) initialize(ctx context.Context) error {
 		return err
 	}
 
-	// Parse result
-	_ = result // TODO: Parse capabilities
+	// Parse capabilities and server info
+	if resultMap, ok := result.(map[string]interface{}); ok {
+		// Parse server info
+		if serverInfo, ok := resultMap["serverInfo"].(map[string]interface{}); ok {
+			c.serverInfo = &ServerInfo{
+				Name:    getString(serverInfo, "name"),
+				Version: getString(serverInfo, "version"),
+			}
+		}
+
+		// Parse capabilities
+		if caps, ok := resultMap["capabilities"].(map[string]interface{}); ok {
+			c.capabilities = &ServerCapabilities{
+				Tools:     parseToolsCapability(caps),
+				Resources: parseResourcesCapability(caps),
+				Prompts:   parsePromptsCapability(caps),
+			}
+		}
+	}
 
 	// Send initialized notification
 	return c.sendRequest(&Request{
@@ -428,4 +445,52 @@ func getString(m map[string]interface{}, key string) string {
 		return v
 	}
 	return ""
+}
+
+// parseToolsCapability parses the tools capability from server capabilities.
+func parseToolsCapability(caps map[string]interface{}) *ToolsCapabilities {
+	tools, ok := caps["tools"].(map[string]interface{})
+	if !ok {
+		return nil
+	}
+
+	capability := &ToolsCapabilities{}
+	if listChanged, ok := tools["listChanged"].(bool); ok {
+		capability.ListChanged = listChanged
+	}
+
+	return capability
+}
+
+// parseResourcesCapability parses the resources capability from server capabilities.
+func parseResourcesCapability(caps map[string]interface{}) *ResourcesCapabilities {
+	resources, ok := caps["resources"].(map[string]interface{})
+	if !ok {
+		return nil
+	}
+
+	capability := &ResourcesCapabilities{}
+	if subscribe, ok := resources["subscribe"].(bool); ok {
+		capability.Subscribe = subscribe
+	}
+	if listChanged, ok := resources["listChanged"].(bool); ok {
+		capability.ListChanged = listChanged
+	}
+
+	return capability
+}
+
+// parsePromptsCapability parses the prompts capability from server capabilities.
+func parsePromptsCapability(caps map[string]interface{}) *PromptsCapabilities {
+	prompts, ok := caps["prompts"].(map[string]interface{})
+	if !ok {
+		return nil
+	}
+
+	capability := &PromptsCapabilities{}
+	if listChanged, ok := prompts["listChanged"].(bool); ok {
+		capability.ListChanged = listChanged
+	}
+
+	return capability
 }

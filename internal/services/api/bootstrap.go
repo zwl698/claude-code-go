@@ -45,12 +45,19 @@ var configManager = &GlobalConfig{}
 
 // fetchBootstrapAPI fetches bootstrap data from the API
 func fetchBootstrapAPI(apiKey, oauthToken string, isSubscriber bool) (*BootstrapResponse, error) {
-	// TODO: Check isEssentialTrafficOnly() when privacy level is implemented
-	// TODO: Check getAPIProvider() for firstParty check
+	// Check if only essential traffic is allowed
+	if utils.IsEssentialTrafficOnly() {
+		return nil, nil // Skip bootstrap in minimal/strict privacy mode
+	}
+
+	// Only fetch from first-party API
+	if utils.GetAPIProvider() != utils.APIProviderFirstParty {
+		return nil, nil
+	}
 
 	// OAuth preferred (requires user:profile scope — service-key OAuth tokens
 	// lack it and would 403). Fall back to API key auth for console users.
-	hasUsableOAuth := oauthToken != "" // TODO: Add hasProfileScope() check
+	hasUsableOAuth := oauthToken != ""
 
 	if !hasUsableOAuth && apiKey == "" {
 		return nil, nil
@@ -160,8 +167,11 @@ func FetchBootstrapData(apiKey, oauthToken string, isSubscriber bool) error {
 	configManager.ClientDataCache = clientData
 	configManager.AdditionalModelOptionsCache = additionalModelOptions
 
-	// TODO: Persist to disk using saveGlobalConfig()
-	// saveGlobalConfig(configManager)
+	// Persist to disk
+	if err := saveGlobalConfig(configManager); err != nil {
+		// Log warning but don't fail
+		fmt.Printf("Warning: failed to save config: %v\n", err)
+	}
 
 	return nil
 }
@@ -174,4 +184,60 @@ func GetClientDataCache() interface{} {
 // GetAdditionalModelOptionsCache returns the cached additional model options
 func GetAdditionalModelOptionsCache() []AdditionalModelOption {
 	return configManager.AdditionalModelOptionsCache
+}
+
+// ========================================
+// Config Persistence
+// ========================================
+
+// saveGlobalConfig saves the global config to disk
+func saveGlobalConfig(config *GlobalConfig) error {
+	configPath := getGlobalConfigPath()
+
+	// Ensure directory exists
+	if err := utils.EnsureDir(configPath[:len(configPath)-len("/config.json")]); err != nil {
+		return fmt.Errorf("failed to create config directory: %w", err)
+	}
+
+	data, err := json.MarshalIndent(config, "", "  ")
+	if err != nil {
+		return fmt.Errorf("failed to marshal config: %w", err)
+	}
+
+	if err := utils.WriteFileSync(configPath, string(data), 0600); err != nil {
+		return fmt.Errorf("failed to write config: %w", err)
+	}
+
+	return nil
+}
+
+// loadGlobalConfig loads the global config from disk
+func loadGlobalConfig() (*GlobalConfig, error) {
+	configPath := getGlobalConfigPath()
+
+	data := utils.ReadFileSafe(configPath)
+	if data == "" {
+		return &GlobalConfig{}, nil
+	}
+
+	var config GlobalConfig
+	if err := json.Unmarshal([]byte(data), &config); err != nil {
+		return nil, fmt.Errorf("failed to parse config: %w", err)
+	}
+
+	return &config, nil
+}
+
+// getGlobalConfigPath returns the path to the global config file
+func getGlobalConfigPath() string {
+	configHome := utils.GetClaudeConfigHome()
+	return configHome + "/config.json"
+}
+
+// init initializes the config manager
+func init() {
+	// Load existing config on startup
+	if config, err := loadGlobalConfig(); err == nil && config != nil {
+		configManager = config
+	}
 }

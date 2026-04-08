@@ -268,90 +268,465 @@ func (s *Service) IsRecording() bool {
 // Voice Commands
 // =============================================================================
 
+// CommandType represents the type of voice command.
+type CommandType string
+
+const (
+	CommandTypeNavigation CommandType = "navigation"
+	CommandTypeEdit       CommandType = "edit"
+	CommandTypeSearch     CommandType = "search"
+	CommandTypeSystem     CommandType = "system"
+	CommandTypeInput      CommandType = "input"
+	CommandTypeCode       CommandType = "code"
+	CommandTypeFormat     CommandType = "format"
+)
+
+// ActionType represents the action of a voice command.
+type ActionType string
+
+const (
+	ActionGoto      ActionType = "goto"
+	ActionOpen      ActionType = "open"
+	ActionClose     ActionType = "close"
+	ActionDelete    ActionType = "delete"
+	ActionRemove    ActionType = "remove"
+	ActionCopy      ActionType = "copy"
+	ActionCut       ActionType = "cut"
+	ActionPaste     ActionType = "paste"
+	ActionUndo      ActionType = "undo"
+	ActionRedo      ActionType = "redo"
+	ActionFind      ActionType = "find"
+	ActionReplace   ActionType = "replace"
+	ActionSave      ActionType = "save"
+	ActionQuit      ActionType = "quit"
+	ActionRun       ActionType = "run"
+	ActionBuild     ActionType = "build"
+	ActionTest      ActionType = "test"
+	ActionFormat    ActionType = "format"
+	ActionComment   ActionType = "comment"
+	ActionUncomment ActionType = "uncomment"
+	ActionIndent    ActionType = "indent"
+	ActionDedent    ActionType = "dedent"
+	ActionText      ActionType = "text"
+	ActionRefactor  ActionType = "refactor"
+	ActionRename    ActionType = "rename"
+	ActionExtract   ActionType = "extract"
+)
+
 // VoiceCommand represents a voice command.
 type VoiceCommand struct {
-	Type   string                 `json:"type"`
-	Action string                 `json:"action"`
-	Params map[string]interface{} `json:"params,omitempty"`
+	Type       CommandType            `json:"type"`
+	Action     ActionType             `json:"action"`
+	Params     map[string]interface{} `json:"params,omitempty"`
+	RawText    string                 `json:"rawText"`
+	Confidence float64                `json:"confidence,omitempty"`
+}
+
+// commandPattern represents a pattern for matching voice commands.
+type commandPattern struct {
+	keywords  []string
+	cmdType   CommandType
+	action    ActionType
+	extractor func(string) map[string]interface{}
+}
+
+// commandPatterns defines the patterns for voice command recognition.
+var commandPatterns = []commandPattern{
+	// Navigation commands
+	{
+		keywords:  []string{"go to", "goto", "jump to", "navigate to"},
+		cmdType:   CommandTypeNavigation,
+		action:    ActionGoto,
+		extractor: extractTargetParams,
+	},
+	{
+		keywords:  []string{"open file", "open"},
+		cmdType:   CommandTypeNavigation,
+		action:    ActionOpen,
+		extractor: extractTargetParams,
+	},
+	{
+		keywords:  []string{"close file", "close"},
+		cmdType:   CommandTypeNavigation,
+		action:    ActionClose,
+		extractor: extractTargetParams,
+	},
+
+	// Edit commands - deletion
+	{
+		keywords:  []string{"delete line", "delete", "remove"},
+		cmdType:   CommandTypeEdit,
+		action:    ActionDelete,
+		extractor: extractRangeParams,
+	},
+	{
+		keywords:  []string{"cut"},
+		cmdType:   CommandTypeEdit,
+		action:    ActionCut,
+		extractor: nil,
+	},
+	{
+		keywords:  []string{"copy"},
+		cmdType:   CommandTypeEdit,
+		action:    ActionCopy,
+		extractor: nil,
+	},
+	{
+		keywords:  []string{"paste"},
+		cmdType:   CommandTypeEdit,
+		action:    ActionPaste,
+		extractor: nil,
+	},
+	{
+		keywords:  []string{"undo"},
+		cmdType:   CommandTypeEdit,
+		action:    ActionUndo,
+		extractor: nil,
+	},
+	{
+		keywords:  []string{"redo"},
+		cmdType:   CommandTypeEdit,
+		action:    ActionRedo,
+		extractor: nil,
+	},
+
+	// Search commands
+	{
+		keywords:  []string{"search for", "search", "find", "look for"},
+		cmdType:   CommandTypeSearch,
+		action:    ActionFind,
+		extractor: extractQueryParams,
+	},
+	{
+		keywords:  []string{"replace", "substitute"},
+		cmdType:   CommandTypeSearch,
+		action:    ActionReplace,
+		extractor: extractReplaceParams,
+	},
+
+	// System commands
+	{
+		keywords:  []string{"save", "save file"},
+		cmdType:   CommandTypeSystem,
+		action:    ActionSave,
+		extractor: nil,
+	},
+	{
+		keywords:  []string{"quit", "exit", "close app"},
+		cmdType:   CommandTypeSystem,
+		action:    ActionQuit,
+		extractor: nil,
+	},
+	{
+		keywords:  []string{"run", "execute"},
+		cmdType:   CommandTypeSystem,
+		action:    ActionRun,
+		extractor: extractTargetParams,
+	},
+	{
+		keywords:  []string{"build", "compile"},
+		cmdType:   CommandTypeSystem,
+		action:    ActionBuild,
+		extractor: nil,
+	},
+	{
+		keywords:  []string{"run tests", "test"},
+		cmdType:   CommandTypeSystem,
+		action:    ActionTest,
+		extractor: nil,
+	},
+
+	// Code commands
+	{
+		keywords:  []string{"refactor"},
+		cmdType:   CommandTypeCode,
+		action:    ActionRefactor,
+		extractor: extractTargetParams,
+	},
+	{
+		keywords:  []string{"rename"},
+		cmdType:   CommandTypeCode,
+		action:    ActionRename,
+		extractor: extractTargetParams,
+	},
+	{
+		keywords:  []string{"extract function", "extract method", "extract"},
+		cmdType:   CommandTypeCode,
+		action:    ActionExtract,
+		extractor: nil,
+	},
+
+	// Format commands
+	{
+		keywords:  []string{"format code", "format", "prettify"},
+		cmdType:   CommandTypeFormat,
+		action:    ActionFormat,
+		extractor: nil,
+	},
+	{
+		keywords:  []string{"comment"},
+		cmdType:   CommandTypeFormat,
+		action:    ActionComment,
+		extractor: nil,
+	},
+	{
+		keywords:  []string{"uncomment"},
+		cmdType:   CommandTypeFormat,
+		action:    ActionUncomment,
+		extractor: nil,
+	},
+	{
+		keywords:  []string{"indent"},
+		cmdType:   CommandTypeFormat,
+		action:    ActionIndent,
+		extractor: nil,
+	},
+	{
+		keywords:  []string{"dedent", "unindent"},
+		cmdType:   CommandTypeFormat,
+		action:    ActionDedent,
+		extractor: nil,
+	},
 }
 
 // ParseCommand parses a voice command from transcribed text.
+// It uses pattern matching to identify commands and extract parameters.
 func ParseCommand(text string) *VoiceCommand {
-	// Simple command parsing
-	// TODO: Implement more sophisticated NLP-based parsing
+	originalText := text
+	text = strings.ToLower(strings.TrimSpace(text))
 
-	text = strings.ToLower(text)
+	// Try to match against known patterns
+	for _, pattern := range commandPatterns {
+		for _, keyword := range pattern.keywords {
+			if strings.Contains(text, keyword) {
+				cmd := &VoiceCommand{
+					Type:    pattern.cmdType,
+					Action:  pattern.action,
+					RawText: originalText,
+				}
 
-	// Navigation commands
-	if strings.Contains(text, "go to") || strings.Contains(text, "open") {
-		return &VoiceCommand{
-			Type:   "navigation",
-			Action: "goto",
-			Params: map[string]interface{}{
-				"target": extractTarget(text),
-			},
+				// Extract parameters if available
+				if pattern.extractor != nil {
+					cmd.Params = pattern.extractor(text)
+				}
+
+				return cmd
+			}
 		}
 	}
 
-	// Edit commands
-	if strings.Contains(text, "delete") || strings.Contains(text, "remove") {
-		return &VoiceCommand{
-			Type:   "edit",
-			Action: "delete",
-		}
+	// Check for numbered commands (e.g., "go to line 42")
+	if cmd := parseNumberedCommand(text, originalText); cmd != nil {
+		return cmd
 	}
 
-	if strings.Contains(text, "copy") {
-		return &VoiceCommand{
-			Type:   "edit",
-			Action: "copy",
-		}
-	}
-
-	if strings.Contains(text, "paste") {
-		return &VoiceCommand{
-			Type:   "edit",
-			Action: "paste",
-		}
-	}
-
-	if strings.Contains(text, "undo") {
-		return &VoiceCommand{
-			Type:   "edit",
-			Action: "undo",
-		}
-	}
-
-	if strings.Contains(text, "redo") {
-		return &VoiceCommand{
-			Type:   "edit",
-			Action: "redo",
-		}
-	}
-
-	// Search commands
-	if strings.Contains(text, "search") || strings.Contains(text, "find") {
-		return &VoiceCommand{
-			Type:   "search",
-			Action: "find",
-			Params: map[string]interface{}{
-				"query": extractQuery(text),
-			},
-		}
+	// Check for selection commands (e.g., "select all", "select word")
+	if cmd := parseSelectionCommand(text, originalText); cmd != nil {
+		return cmd
 	}
 
 	// Default: treat as text input
 	return &VoiceCommand{
-		Type:   "input",
-		Action: "text",
+		Type:    CommandTypeInput,
+		Action:  ActionText,
+		RawText: originalText,
 		Params: map[string]interface{}{
-			"text": text,
+			"text": originalText,
 		},
 	}
 }
 
+// parseNumberedCommand parses commands with numbers (e.g., "go to line 42").
+func parseNumberedCommand(text, originalText string) *VoiceCommand {
+	// Pattern: "go to line X" or "goto line X"
+	if strings.Contains(text, "line") {
+		words := strings.Fields(text)
+		for i, word := range words {
+			if word == "line" && i+1 < len(words) {
+				// Try to parse the next word as a number
+				lineNum := parseNumber(words[i+1])
+				if lineNum > 0 {
+					return &VoiceCommand{
+						Type:    CommandTypeNavigation,
+						Action:  ActionGoto,
+						RawText: originalText,
+						Params: map[string]interface{}{
+							"line": lineNum,
+						},
+					}
+				}
+			}
+		}
+	}
+
+	return nil
+}
+
+// parseSelectionCommand parses selection-related commands.
+func parseSelectionCommand(text, originalText string) *VoiceCommand {
+	if strings.Contains(text, "select all") {
+		return &VoiceCommand{
+			Type:    CommandTypeEdit,
+			Action:  ActionText,
+			RawText: originalText,
+			Params: map[string]interface{}{
+				"selection": "all",
+			},
+		}
+	}
+
+	if strings.Contains(text, "select word") {
+		return &VoiceCommand{
+			Type:    CommandTypeEdit,
+			Action:  ActionText,
+			RawText: originalText,
+			Params: map[string]interface{}{
+				"selection": "word",
+			},
+		}
+	}
+
+	if strings.Contains(text, "select line") {
+		return &VoiceCommand{
+			Type:    CommandTypeEdit,
+			Action:  ActionText,
+			RawText: originalText,
+			Params: map[string]interface{}{
+				"selection": "line",
+			},
+		}
+	}
+
+	return nil
+}
+
+// extractTargetParams extracts target parameters from text.
+func extractTargetParams(text string) map[string]interface{} {
+	words := strings.Fields(text)
+	for i, word := range words {
+		// Look for target after keywords
+		if word == "to" || word == "open" || word == "run" || word == "rename" || word == "refactor" {
+			if i+1 < len(words) {
+				return map[string]interface{}{
+					"target": strings.Join(words[i+1:], " "),
+				}
+			}
+		}
+	}
+	return nil
+}
+
+// extractQueryParams extracts query parameters from text.
+func extractQueryParams(text string) map[string]interface{} {
+	words := strings.Fields(text)
+	for i, word := range words {
+		if word == "for" || word == "search" || word == "find" || word == "look" {
+			// Find the start of the query
+			startIdx := i + 1
+			if word == "look" && startIdx < len(words) && words[startIdx] == "for" {
+				startIdx++
+			}
+			if startIdx < len(words) {
+				return map[string]interface{}{
+					"query": strings.Join(words[startIdx:], " "),
+				}
+			}
+		}
+	}
+	return nil
+}
+
+// extractReplaceParams extracts replace parameters from text.
+func extractReplaceParams(text string) map[string]interface{} {
+	// Pattern: "replace X with Y" or "substitute X with Y"
+	if strings.Contains(text, " with ") {
+		parts := strings.SplitN(text, " with ", 2)
+		if len(parts) == 2 {
+			// Extract what to replace from the first part
+			searchPart := parts[0]
+			var search string
+			for _, keyword := range []string{"replace", "substitute"} {
+				if idx := strings.Index(searchPart, keyword); idx != -1 {
+					search = strings.TrimSpace(searchPart[idx+len(keyword):])
+					break
+				}
+			}
+			return map[string]interface{}{
+				"search":  search,
+				"replace": strings.TrimSpace(parts[1]),
+			}
+		}
+	}
+	return nil
+}
+
+// extractRangeParams extracts range parameters from text.
+func extractRangeParams(text string) map[string]interface{} {
+	params := make(map[string]interface{})
+
+	// Check for line range (e.g., "delete lines 5 to 10")
+	if strings.Contains(text, "lines") {
+		words := strings.Fields(text)
+		for i, word := range words {
+			if word == "lines" && i+1 < len(words) {
+				// Try to parse line numbers
+				startLine := parseNumber(words[i+1])
+				if startLine > 0 {
+					params["startLine"] = startLine
+					// Check for range (e.g., "lines 5 to 10")
+					if i+3 < len(words) && words[i+2] == "to" {
+						endLine := parseNumber(words[i+3])
+						if endLine > 0 {
+							params["endLine"] = endLine
+						}
+					}
+				}
+				break
+			}
+		}
+	}
+
+	// Check for word range (e.g., "delete word", "delete 5 words")
+	if strings.Contains(text, "word") || strings.Contains(text, "words") {
+		params["unit"] = "word"
+		words := strings.Fields(text)
+		for i, word := range words {
+			if num := parseNumber(word); num > 0 && i+1 < len(words) && strings.HasPrefix(words[i+1], "word") {
+				params["count"] = num
+				break
+			}
+		}
+	}
+
+	return params
+}
+
+// parseNumber converts a word to a number, handling both digits and words.
+func parseNumber(word string) int {
+	// Try direct parsing
+	var num int
+	if _, err := fmt.Sscanf(word, "%d", &num); err == nil {
+		return num
+	}
+
+	// Try word-to-number conversion
+	wordNums := map[string]int{
+		"zero": 0, "one": 1, "two": 2, "three": 3, "four": 4,
+		"five": 5, "six": 6, "seven": 7, "eight": 8, "nine": 9,
+		"ten": 10, "eleven": 11, "twelve": 12, "thirteen": 13,
+		"fourteen": 14, "fifteen": 15, "sixteen": 16, "seventeen": 17,
+		"eighteen": 18, "nineteen": 19, "twenty": 20,
+	}
+
+	if num, ok := wordNums[word]; ok {
+		return num
+	}
+
+	return 0
+}
+
+// extractTarget extracts a target from text (legacy function for compatibility).
 func extractTarget(text string) string {
-	// Simple extraction: take words after "go to" or "open"
 	words := strings.Fields(text)
 	for i, word := range words {
 		if word == "to" || word == "open" {
@@ -363,8 +738,8 @@ func extractTarget(text string) string {
 	return ""
 }
 
+// extractQuery extracts a query from text (legacy function for compatibility).
 func extractQuery(text string) string {
-	// Simple extraction: take words after "search" or "find"
 	words := strings.Fields(text)
 	for i, word := range words {
 		if word == "search" || word == "find" || word == "for" {

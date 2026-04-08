@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"claude-code-go/internal/utils"
 )
 
 // Rate limit error message prefixes
@@ -101,8 +103,17 @@ func GetRateLimitMessage(limits ClaudeAILimits, model string) *RateLimitMessage 
 			return nil
 		}
 
-		// TODO: Check subscription type and billing access
-		// For now, show warning for all users
+		// Check subscription type and billing access
+		if !utils.HasBillingAccess() {
+			// Free tier users get different messaging
+			text := getEarlyWarningText(limits)
+			if text != "" {
+				return &RateLimitMessage{
+					Message:  text + " · /upgrade for more",
+					Severity: RateLimitSeverityWarning,
+				}
+			}
+		}
 
 		text := getEarlyWarningText(limits)
 		if text != "" {
@@ -167,8 +178,12 @@ func getLimitReachedText(limits ClaudeAILimits, model string) string {
 	var limitName string
 	switch limits.RateLimitType {
 	case RateLimitTypeSevenDaySonnet:
-		// TODO: Check subscription type for pro/enterprise
-		limitName = "Sonnet limit"
+		// Check subscription type for pro/enterprise
+		if utils.GetSubscriptionType() == utils.SubscriptionPro || utils.GetSubscriptionType() == utils.SubscriptionEnterprise {
+			limitName = "Sonnet pro limit"
+		} else {
+			limitName = "Sonnet limit"
+		}
 	case RateLimitTypeSevenDayOpus:
 		limitName = "Opus limit"
 	case RateLimitTypeSevenDay:
@@ -244,11 +259,18 @@ func getEarlyWarningText(limits ClaudeAILimits) string {
 }
 
 func getWarningUpsellText(rateLimitType RateLimitType) string {
-	// TODO: Implement subscription type checking
-	// For now, return basic upsell text
-	if rateLimitType == RateLimitTypeFiveHour {
-		return "/upgrade to keep using Claude Code"
+	// Check subscription type for appropriate upsell message
+	subType := utils.GetSubscriptionType()
+
+	// Free tier users always get upsell
+	if subType == utils.SubscriptionFree {
+		if rateLimitType == RateLimitTypeFiveHour {
+			return "/upgrade to keep using Claude Code"
+		}
+		return "/upgrade for higher limits"
 	}
+
+	// Pro/Team/Enterprise users don't need upsell
 	return ""
 }
 
@@ -282,8 +304,12 @@ func GetUsingOverageText(limits ClaudeAILimits) string {
 }
 
 func formatLimitReachedText(limit, resetMessage, model string) string {
-	// TODO: Check if user type is 'ant' from environment
-	// For now, return standard message
+	// Check if user is internal (ant)
+	if utils.IsInternalUser() {
+		return fmt.Sprintf("You've reached the %s%s", limit, resetMessage)
+	}
+
+	// Standard message for external users
 	return fmt.Sprintf("You've hit your %s%s", limit, resetMessage)
 }
 

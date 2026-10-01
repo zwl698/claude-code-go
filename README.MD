@@ -1,3 +1,5 @@
+
+
 # claude-code-go
 
 > 基于 [Claude Code](https://www.npmjs.com/package/@anthropic-ai/claude-code) v2.1.88 Source Map 还原并翻译为 Go 语言的非官方实现
@@ -467,7 +469,8 @@ if result.IsAllowed() {
 
 **支持的权限模式**：
 - `default`: 默认模式，需要确认
-- `accept`: 自动接受所有操作
+- `acceptEdits`: 自动接受文件编辑
+- `bypassPermissions`: 允许所有操作（请谨慎使用）
 - `plan`: 规划模式，只读操作
 
 ### Hooks 系统
